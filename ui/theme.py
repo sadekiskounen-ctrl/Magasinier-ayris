@@ -67,6 +67,7 @@ SIDEBAR_ITEMS = [
     {'key': 'fournisseurs','icon': '🏭', 'label': 'Fournisseurs'},
     {'key': 'catalogue',   'icon': '📦', 'label': 'Produit Pièce de Rechange'},
     {'key': 'engins',      'icon': '🚜', 'label': "Produit d'Engins"},
+    {'key': 'outillage',   'icon': '🔧', 'label': 'Outillage'},
     {'key': 'saisie',      'icon': '🔄', 'label': 'Mouvements & Bons'},
     {'key': 'achat',       'icon': '🛒', 'label': 'Bon de Commande'},
     {'key': 'inventaire',  'icon': '📋', 'label': 'Inventaire & Excel'},

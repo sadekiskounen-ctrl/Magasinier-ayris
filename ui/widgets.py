@@ -378,6 +378,8 @@ class StyledTreeview(ttk.Treeview):
         self.tag_configure('retour',  background='#FEF3C7', foreground='#92400E')
         self.tag_configure('even',    background='#FFFFFF', foreground='#0F172A')
         self.tag_configure('odd',     background='#F8FAFC', foreground='#0F172A')
+        self.tag_configure('dans_magasin', background='#E6F4EA', foreground='#137333')
+        self.tag_configure('en_dehors',     background='#FCE8E6', foreground='#C5221F')
 
         # Support du défilement horizontal à la molette (Shift + Molette)
         self.bind('<Shift-MouseWheel>', self._on_shift_mousewheel)

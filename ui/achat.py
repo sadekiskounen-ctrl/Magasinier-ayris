@@ -26,6 +26,7 @@ class AchatFrame(ctk.CTkFrame):
         super().__init__(parent, fg_color=COLORS['bg_dark'], **kwargs)
         self._articles: list[dict] = []
         self._search_timer = None
+        self._editing_index = None
         self._build_ui()
 
     def refresh(self):
@@ -146,10 +147,11 @@ class AchatFrame(ctk.CTkFrame):
         self.e_obs = make_input(left, placeholder='Observation / Urgence...')
         self.e_obs.pack(fill='x', padx=16, pady=(0, 14))
 
-        make_primary_button(
+        self.btn_ajouter = make_primary_button(
             left, 'Ajouter à la Commande', command=self._ajouter_article,
             icon='➕', width=240
-        ).pack(fill='x', padx=16, pady=(0, 8))
+        )
+        self.btn_ajouter.pack(fill='x', padx=16, pady=(0, 8))
 
         make_secondary_button(
             left, '🔄 Réinitialiser', command=self._reset_form, width=200
@@ -192,6 +194,7 @@ class AchatFrame(ctk.CTkFrame):
             col_widths=[40, 120, 220, 70, 70, 130]
         )
         self.tv.pack(side='left', fill='both', expand=True)
+        self.tv.bind('<Double-1>', lambda e: self._editer_ligne())
         add_scrollbar(tv_frame, self.tv)
 
         # ── Barre d'actions commande ──────────────────────────────────────────
@@ -199,12 +202,16 @@ class AchatFrame(ctk.CTkFrame):
         actions.pack(fill='x', padx=16, pady=(0, 14))
 
         make_danger_button(
-            actions, '🗑️ Supprimer Ligne', command=self._supprimer_ligne, width=180
+            actions, '🗑️ Supprimer Ligne', command=self._supprimer_ligne, width=170
         ).pack(side='left')
 
         make_secondary_button(
-            actions, '🗑️ Vider Tout', command=self._vider_commande, width=150
-        ).pack(side='left', padx=8)
+            actions, '✏️ Modifier Ligne', command=self._editer_ligne, width=160
+        ).pack(side='left', padx=4)
+
+        make_secondary_button(
+            actions, '🗑️ Vider Tout', command=self._vider_commande, width=140
+        ).pack(side='left', padx=4)
 
         # Bouton principal — générer PDF
         btn_pdf = ctk.CTkButton(
@@ -263,6 +270,27 @@ class AchatFrame(ctk.CTkFrame):
             self.var_unite.set(produit.get('unite', 'Unité'))
 
     # ── Actions ────────────────────────────────────────────────────────────────
+    def _editer_ligne(self):
+        sel = self.tv.selection()
+        if not sel:
+            messagebox.showwarning('Sélection', 'Veuillez sélectionner une ligne à modifier.', parent=self)
+            return
+        try:
+            idx = int(sel[0])
+        except (ValueError, IndexError):
+            return
+        if 0 <= idx < len(self._articles):
+            self._editing_index = idx
+            art = self._articles[idx]
+            self.var_ref.set(art.get('reference', ''))
+            self.var_design.set(art.get('designation', ''))
+            self.var_qte.set(str(art.get('quantite', 1)))
+            self.var_unite.set(art.get('unite', 'Unité'))
+            self.e_obs.delete(0, 'end')
+            self.e_obs.insert(0, art.get('observation', ''))
+            if hasattr(self, 'btn_ajouter'):
+                self.btn_ajouter.configure(text='💾 Mettre à jour')
+
     def _ajouter_article(self):
         ref    = self.var_ref.get().strip()
         design = self.var_design.get().strip()
@@ -284,13 +312,20 @@ class AchatFrame(ctk.CTkFrame):
             messagebox.showerror('Erreur', 'Quantité invalide (entier > 0 requis).', parent=self)
             return
 
-        self._articles.append({
+        item = {
             'reference': ref,
             'designation': design,
             'quantite': qte,
             'unite': unite,
             'observation': obs,
-        })
+        }
+
+        if self._editing_index is not None and 0 <= self._editing_index < len(self._articles):
+            self._articles[self._editing_index] = item
+            self._editing_index = None
+        else:
+            self._articles.append(item)
+
         self._refresh_table()
         self._reset_article_fields()
 
@@ -301,12 +336,18 @@ class AchatFrame(ctk.CTkFrame):
         idx = int(sel[0])
         if 0 <= idx < len(self._articles):
             self._articles.pop(idx)
+            self._editing_index = None
+            if hasattr(self, 'btn_ajouter'):
+                self.btn_ajouter.configure(text='Ajouter à la Commande')
             self._refresh_table()
 
     def _vider_commande(self):
         if self._articles:
             if messagebox.askyesno('Vider', 'Vider toute la commande ?', parent=self):
                 self._articles.clear()
+                self._editing_index = None
+                if hasattr(self, 'btn_ajouter'):
+                    self.btn_ajouter.configure(text='Ajouter à la Commande')
                 self._refresh_table()
 
     def _refresh_table(self):
@@ -331,10 +372,13 @@ class AchatFrame(ctk.CTkFrame):
         self.lbl_total.configure(text=f'Total : {nb} article(s)  |  {total_qte} unités')
 
     def _reset_article_fields(self):
+        self._editing_index = None
         self.var_ref.set('')
         self.var_design.set('')
         self.var_qte.set('1')
         self.e_obs.delete(0, 'end')
+        if hasattr(self, 'btn_ajouter'):
+            self.btn_ajouter.configure(text='Ajouter à la Commande')
         self.e_ref.focus()
 
     def _reset_form(self):

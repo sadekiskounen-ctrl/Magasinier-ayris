@@ -29,6 +29,7 @@ class SaisieFrame(ctk.CTkFrame):
         self._produit_actuel = None
         self._articles_list = []
         self._search_timer = None
+        self._editing_index = None
 
         self._build_ui()
         self._set_focus_ref()
@@ -112,6 +113,7 @@ class SaisieFrame(ctk.CTkFrame):
 
     def _set_mode(self, mode: str):
         self._mode = mode
+        self._editing_index = None
         active_color_map = {
             'SORTIE': COLORS['danger'],
             'ENTREE': COLORS['success'],
@@ -246,12 +248,14 @@ class SaisieFrame(ctk.CTkFrame):
             stretch_cols=True
         )
         self.tv_articles.pack(side='left', fill='both', expand=True)
+        self.tv_articles.bind('<Double-1>', lambda e: self._editer_ligne())
         add_scrollbar(tv_frame, self.tv_articles)
 
         action_bar = ctk.CTkFrame(doc_panel, fg_color='transparent')
         action_bar.pack(fill='x', padx=16, pady=(0, 16))
 
-        make_danger_button(action_bar, '🗑️ Supprimer Ligne', command=self._supprimer_ligne, width=180).pack(side='left')
+        make_danger_button(action_bar, '🗑️ Supprimer Ligne', command=self._supprimer_ligne, width=170).pack(side='left')
+        make_secondary_button(action_bar, '✏️ Modifier Ligne', command=self._editer_ligne, width=170).pack(side='left', padx=8)
 
         val_btn_bg = COLORS['danger'] if self._mode == 'SORTIE' else (COLORS['success'] if self._mode == 'ENTREE' else COLORS['warning'])
         val_btn_hover = '#DC2626' if self._mode == 'SORTIE' else ('#16A34A' if self._mode == 'ENTREE' else '#D97706')
@@ -322,6 +326,13 @@ class SaisieFrame(ctk.CTkFrame):
         self.e_qte = make_input(scroll_add, placeholder='1', textvariable=self.var_qte)
         self.e_qte.pack(fill='x', padx=12, pady=(0, 8))
 
+        # Unité (Menu déroulant)
+        self._section_lbl(scroll_add, '📦  Unité *')
+        self.var_unite = tk.StringVar(value='Unité')
+        from ui.theme import UNITES
+        self.cb_unite = make_combobox(scroll_add, UNITES, variable=self.var_unite)
+        self.cb_unite.pack(fill='x', padx=12, pady=(0, 8))
+
         # Utilité / Ligne(s)
         self._section_lbl(scroll_add, '🏭  Utilité / Ligne(s) *')
         self.widget_lignes = MultiSelectLignesWidget(
@@ -342,10 +353,11 @@ class SaisieFrame(ctk.CTkFrame):
         )
         self.cb_machine.pack(fill='x', padx=12, pady=(0, 12))
 
-        make_primary_button(
+        self.btn_ajouter_ligne = make_primary_button(
             scroll_add, '➕ Ajouter à la Liste', command=self._ajouter_ligne,
             icon='', width=240
-        ).pack(fill='x', padx=12, pady=(4, 12))
+        )
+        self.btn_ajouter_ligne.pack(fill='x', padx=12, pady=(4, 12))
 
         self.fiche_panel = ctk.CTkFrame(scroll_add, fg_color='transparent')
         self.fiche_panel.pack(fill='both', expand=True, padx=4, pady=(0, 4))
@@ -410,6 +422,8 @@ class SaisieFrame(ctk.CTkFrame):
             self._build_fiche_produit(produit)
 
             self.var_designation.set(produit['designation'])
+            if produit.get('unite') and hasattr(self, 'var_unite'):
+                self.var_unite.set(produit['unite'])
             if hasattr(self, 'widget_lignes'):
                 l_str = produit.get('utilite_ligne', 'KHS1')
                 self.widget_lignes.set_selected([l.strip() for l in l_str.split(',')])
@@ -465,9 +479,42 @@ class SaisieFrame(ctk.CTkFrame):
                      font=FONTS['body_bold'], text_color=stock_color).pack(padx=10, pady=4)
 
     # ── GESTION DE LA LISTE MULTI-LIGNES ──
+    def _editer_ligne(self):
+        sel = self.tv_articles.selection()
+        if not sel:
+            messagebox.showwarning('Sélection', 'Veuillez sélectionner une ligne à modifier dans le tableau.', parent=self)
+            return
+        try:
+            idx = int(sel[0])
+        except (ValueError, IndexError):
+            return
+
+        if 0 <= idx < len(self._articles_list):
+            self._editing_index = idx
+            item = self._articles_list[idx]
+
+            self.var_ref.set(item.get('reference', ''))
+            self.var_designation.set(item.get('designation', ''))
+            self.var_qte.set(str(item.get('quantite', 1)))
+            if hasattr(self, 'var_unite'):
+                self.var_unite.set(item.get('unite', 'Unité'))
+
+            if hasattr(self, 'widget_lignes'):
+                l_str = item.get('utilite_ligne', 'KHS1')
+                self.widget_lignes.set_selected([l.strip() for l in l_str.split(',') if l.strip()])
+            if hasattr(self, 'var_machine'):
+                self.var_machine.set(item.get('nom_machine', 'N/A'))
+
+            # Fiche produit si disponible
+            self._lookup_product(item.get('reference', ''))
+
+            if hasattr(self, 'btn_ajouter_ligne'):
+                self.btn_ajouter_ligne.configure(text='💾 Mettre à jour la Ligne')
+
     def _ajouter_ligne(self):
         reference = self.var_ref.get().strip()
         designation = self.var_designation.get().strip()
+        unite = self.var_unite.get() if hasattr(self, 'var_unite') else 'Unité'
         selected_lignes = self.widget_lignes.get_selected()
         lignes_str = ", ".join(selected_lignes)
         machine = self.var_machine.get()
@@ -487,20 +534,25 @@ class SaisieFrame(ctk.CTkFrame):
             messagebox.showerror('Erreur', 'La quantité doit être un entier positif.', parent=self)
             return
 
-        # Contrôle de stock pour la Sortie
-        if self._mode == 'SORTIE' and self._produit_actuel:
+        # Contrôle de stock strict pour la Sortie (Bon de Sortie)
+        if self._mode == 'SORTIE':
+            if not self._produit_actuel:
+                self._produit_actuel = db.find_produit_by_ref_or_last4(reference)
+
+            if not self._produit_actuel:
+                messagebox.showerror('Erreur Stock', 'Cet article n\'est pas disponible en stock.', parent=self)
+                return
+
             stock_actuel = self._produit_actuel.get('quantite_stock', 0)
-            if qte > stock_actuel:
-                confirm = messagebox.askyesno(
-                    'Stock insuffisant',
-                    f'La quantité demandée ({qte}) dépasse le stock actuel ({stock_actuel}).\nVoulez-vous tout de même ajouter cette ligne ?',
+            if stock_actuel <= 0 or qte > stock_actuel:
+                messagebox.showerror(
+                    'Erreur Stock',
+                    f'Cet article n\'est pas disponible en stock.\n(Stock actuel disponible : {stock_actuel})',
                     parent=self
                 )
-                if not confirm:
-                    return
+                return
 
         pid = self._produit_actuel['id'] if self._produit_actuel else None
-        unite = self._produit_actuel.get('unite', 'Unité') if self._produit_actuel else 'Unité'
 
         item = {
             'produit_id': pid,
@@ -514,15 +566,26 @@ class SaisieFrame(ctk.CTkFrame):
             'nom_machine': machine,
         }
 
-        self._articles_list.append(item)
-        self._refresh_tv_articles()
+        if self._editing_index is not None and 0 <= self._editing_index < len(self._articles_list):
+            self._articles_list[self._editing_index] = item
+            self._editing_index = None
+        else:
+            self._articles_list.append(item)
 
-        # Reset champs d'ajout
+        self._refresh_tv_articles()
+        self._reset_add_form()
+
+    def _reset_add_form(self):
+        self._editing_index = None
         self.var_ref.set('')
         self.var_designation.set('')
         self.var_qte.set('1')
+        if hasattr(self, 'var_unite'):
+            self.var_unite.set('Unité')
         self._produit_actuel = None
         self._build_fiche_vide()
+        if hasattr(self, 'btn_ajouter_ligne'):
+            self.btn_ajouter_ligne.configure(text='➕ Ajouter à la Liste')
         self._set_focus_ref()
 
     def _supprimer_ligne(self):
@@ -532,6 +595,9 @@ class SaisieFrame(ctk.CTkFrame):
         idx = int(sel[0])
         if 0 <= idx < len(self._articles_list):
             self._articles_list.pop(idx)
+            self._editing_index = None
+            if hasattr(self, 'btn_ajouter_ligne'):
+                self.btn_ajouter_ligne.configure(text='➕ Ajouter à la Liste')
             self._refresh_tv_articles()
 
     def _refresh_tv_articles(self):

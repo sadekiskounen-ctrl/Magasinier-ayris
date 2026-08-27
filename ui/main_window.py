@@ -279,6 +279,7 @@ class MainWindow(ctk.CTk):
         from ui.fournisseurs import FournisseursFrame
         from ui.catalogue import CatalogueFrame
         from ui.engins import EnginsFrame
+        from ui.outillage import OutillageFrame
         from ui.saisie import SaisieFrame
         from ui.inventaire import InventaireFrame
         from ui.historique import HistoriqueFrame
@@ -290,6 +291,7 @@ class MainWindow(ctk.CTk):
             'fournisseurs': FournisseursFrame,
             'catalogue':   CatalogueFrame,
             'engins':      EnginsFrame,
+            'outillage':   OutillageFrame,
             'saisie':      SaisieFrame,
             'achat':       AchatFrame,
             'inventaire':  InventaireFrame,

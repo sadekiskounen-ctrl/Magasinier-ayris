@@ -228,6 +228,35 @@ def initialize_database():
         )
     """)
 
+    # Table OUTILLAGE
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS outillage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            designation TEXT NOT NULL,
+            marque TEXT DEFAULT '',
+            numero_outillage TEXT NOT NULL,
+            quantite INTEGER DEFAULT 1,
+            statut TEXT DEFAULT 'Dans le magasin',
+            date_ajout DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Table SORTIES OUTILLAGE
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sorties_outillage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outillage_id INTEGER NOT NULL,
+            demandeur TEXT NOT NULL,
+            quantite_sortie INTEGER NOT NULL,
+            quantite_retournee INTEGER DEFAULT 0,
+            motif TEXT DEFAULT '',
+            date_sortie DATETIME DEFAULT CURRENT_TIMESTAMP,
+            date_retour DATETIME,
+            statut TEXT DEFAULT 'EN_COURS',
+            FOREIGN KEY (outillage_id) REFERENCES outillage(id) ON DELETE CASCADE
+        )
+    """)
+
     # ── Indexation SQL pour performances maximales ───────────────────────────
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mouvements_produit_id ON mouvements(produit_id);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mouvements_date ON mouvements(date_heure DESC);")
@@ -238,6 +267,10 @@ def initialize_database():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_produits_code_barres ON produits(code_barres);")
     cursor.execute("DROP INDEX IF EXISTS idx_produits_code_barres_reverse;")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_produits_code_barres_reverse ON produits(code_barres_reverse COLLATE NOCASE);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_outillage_numero ON outillage(numero_outillage);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_outillage_designation ON outillage(designation);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sorties_outillage_outillage_id ON sorties_outillage(outillage_id);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_sorties_outillage_statut ON sorties_outillage(statut);")
 
     conn.commit()
     print(f"[DB] Base de données SARL NOMADE AYRIS initialisée : {db_path}")
@@ -825,7 +858,10 @@ def enregistrer_mouvements_multiples(articles: list, type_mvt: str, beneficiaire
                     WHERE id = ?
                 """, (designation, utilite_ligne, nom_machine, pid))
         else:
-            # Auto-créer le produit avec le fournisseur
+            if type_mvt == 'SORTIE':
+                raise ValueError(f"Cet article ({ref} - {designation}) n'est pas disponible en stock.")
+
+            # Auto-créer le produit avec le fournisseur (ENTREE / RETOUR)
             cursor.execute("""
                 INSERT INTO produits (code_barres, code_barres_reverse, designation, quantite_stock, unite, utilite_ligne, nom_machine, seuil_alerte, fournisseur_id)
                 VALUES (?, ?, ?, 0, ?, ?, ?, 5, ?)
@@ -1177,3 +1213,465 @@ def get_stats_mouvements_mois(year_month: str) -> dict:
         'total_sorties': sum(days_sorties.values()),
         'total_retours': sum(days_retours.values())
     }
+
+
+# ─────────────────────── OUTILLAGE ───────────────────────
+
+def _ensure_outillage_table(conn: sqlite3.Connection):
+    """S'assure que la table outillage existe."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS outillage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            designation TEXT NOT NULL,
+            marque TEXT DEFAULT '',
+            numero_outillage TEXT NOT NULL,
+            quantite INTEGER DEFAULT 1,
+            statut TEXT DEFAULT 'Dans le magasin',
+            date_ajout DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+
+def get_all_outillages(search: str = "", statut_filter: str = "Tous") -> list:
+    """
+    Retourne tous les outillages avec recherche et filtrage par statut.
+    Enrichit chaque ligne avec 'quantite_dehors_actuelle' calculée dynamiquement.
+    """
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    if statut_filter == "Dans le magasin":
+        query = """
+            SELECT * FROM outillage
+            WHERE quantite > 0
+        """
+        params = []
+    elif statut_filter == "En dehors du magasin":
+        query = """
+            SELECT DISTINCT o.* FROM outillage o
+            WHERE o.statut != 'Dans le magasin'
+               OR o.quantite <= 0
+               OR EXISTS (
+                   SELECT 1 FROM sorties_outillage s
+                   WHERE s.outillage_id = o.id AND s.statut = 'EN_COURS'
+               )
+        """
+        params = []
+    else:
+        query = "SELECT * FROM outillage WHERE 1=1"
+        params = []
+
+    if search:
+        like = f"%{search}%"
+        query += " AND (designation LIKE ? OR marque LIKE ? OR numero_outillage LIKE ?)"
+        params.extend([like, like, like])
+
+    query += " ORDER BY id DESC"
+    cursor.execute(query, params)
+    rows = [dict(r) for r in cursor.fetchall()]
+
+    # Enrichir chaque ligne avec quantite_dehors_actuelle
+    for row in rows:
+        try:
+            cursor.execute("""
+                SELECT COALESCE(SUM(quantite_sortie - quantite_retournee), 0) as qd
+                FROM sorties_outillage
+                WHERE outillage_id = ? AND statut = 'EN_COURS'
+            """, (row['id'],))
+            res = cursor.fetchone()
+            qd = int(res['qd']) if res and res['qd'] else 0
+        except Exception:
+            qd = 0
+        if qd == 0 and row.get('statut') != 'Dans le magasin':
+            qd = max(row.get('quantite', 0), 1)
+        row['quantite_dehors_actuelle'] = qd
+
+    return rows
+
+
+def get_outillage_stats() -> dict:
+    """
+    Retourne les statistiques calculées automatiquement pour l'outillage :
+    - total_types: Nombre de références d'outils
+    - total_quantite: Quantité globale cumulée
+    - quantite_magasin: Quantité actuellement disponible dans le magasin
+    - quantite_dehors: Quantité actuellement sortie / en dehors du magasin
+    - nb_sorties_en_cours: Nombre d'emprunts actifs non restitués
+    """
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) as total_types, COALESCE(SUM(quantite), 0) as total_quantite FROM outillage")
+    row_total = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT COALESCE(SUM(quantite), 0) as dans_magasin
+        FROM outillage
+        WHERE statut = 'Dans le magasin' AND quantite > 0
+    """)
+    row_dans = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT COALESCE(SUM(s.quantite_sortie - s.quantite_retournee), 0) as en_dehors
+        FROM sorties_outillage s
+        JOIN outillage o ON s.outillage_id = o.id
+        WHERE s.statut = 'EN_COURS'
+    """)
+    row_sorties = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT COUNT(s.id) as nb_sorties
+        FROM sorties_outillage s
+        JOIN outillage o ON s.outillage_id = o.id
+        WHERE s.statut = 'EN_COURS'
+    """)
+    row_nb_sorties = cursor.fetchone()
+
+    cursor.execute("""
+        SELECT COALESCE(SUM(quantite), 0) as orphan_dehors
+        FROM outillage
+        WHERE (statut != 'Dans le magasin' OR quantite <= 0)
+    """)
+    row_orphan = cursor.fetchone()
+
+    qte_dehors = max(row_sorties['en_dehors'], row_orphan['orphan_dehors'])
+    qte_magasin = row_dans['dans_magasin']
+    total_qte = qte_magasin + qte_dehors
+
+    return {
+        'total_types': row_total['total_types'],
+        'total_quantite': max(row_total['total_quantite'], total_qte),
+        'quantite_magasin': qte_magasin,
+        'quantite_dehors': qte_dehors,
+        'nb_sorties_en_cours': row_nb_sorties['nb_sorties']
+    }
+
+
+def get_outillage_by_id(tool_id: int) -> dict | None:
+    """Retourne un outillage par ID."""
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM outillage WHERE id = ?", (tool_id,))
+    row = cursor.fetchone()
+    return dict(row) if row else None
+
+
+def ajouter_outillage(data: dict) -> int:
+    """Ajoute un nouvel outillage."""
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    cursor = conn.cursor()
+
+    params = {
+        'designation':      data.get('designation', '').strip(),
+        'marque':           data.get('marque', '').strip(),
+        'numero_outillage': data.get('numero_outillage', '').strip(),
+        'quantite':         data.get('quantite', 1),
+        'statut':           data.get('statut', 'Dans le magasin')
+    }
+
+    cursor.execute("""
+        INSERT INTO outillage (designation, marque, numero_outillage, quantite, statut)
+        VALUES (:designation, :marque, :numero_outillage, :quantite, :statut)
+    """, params)
+    new_id = cursor.lastrowid
+    conn.commit()
+    return new_id
+
+
+def modifier_outillage(tool_id: int, data: dict):
+    """Met à jour un outillage existant."""
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    cursor = conn.cursor()
+
+    params = {
+        'designation':      data.get('designation', '').strip(),
+        'marque':           data.get('marque', '').strip(),
+        'numero_outillage': data.get('numero_outillage', '').strip(),
+        'quantite':         data.get('quantite', 1),
+        'statut':           data.get('statut', 'Dans le magasin'),
+        'id':               tool_id
+    }
+
+    cursor.execute("""
+        UPDATE outillage SET
+            designation = :designation,
+            marque = :marque,
+            numero_outillage = :numero_outillage,
+            quantite = :quantite,
+            statut = :statut
+        WHERE id = :id
+    """, params)
+    conn.commit()
+
+
+def supprimer_outillage(tool_id: int):
+    """Supprime un outillage et ses éventuels mouvements d'emprunt associés."""
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    _ensure_sorties_outillage_table(conn)
+    conn.execute("DELETE FROM sorties_outillage WHERE outillage_id = ?", (tool_id,))
+    conn.execute("DELETE FROM outillage WHERE id = ?", (tool_id,))
+    conn.commit()
+
+
+def changer_statut_outillage(tool_id: int, nouveau_statut: str):
+    """Bascule le statut d'un outillage ('Dans le magasin' ou 'En dehors du magasin')."""
+    conn = get_connection()
+    _ensure_outillage_table(conn)
+    conn.execute("UPDATE outillage SET statut = ? WHERE id = ?", (nouveau_statut, tool_id))
+    conn.commit()
+
+
+def _ensure_sorties_outillage_table(conn: sqlite3.Connection):
+    """S'assure que la table sorties_outillage existe et nettoie les orphelins."""
+    _ensure_outillage_table(conn)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sorties_outillage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            outillage_id INTEGER NOT NULL,
+            demandeur TEXT NOT NULL,
+            quantite_sortie INTEGER NOT NULL,
+            quantite_retournee INTEGER DEFAULT 0,
+            motif TEXT DEFAULT '',
+            date_sortie DATETIME DEFAULT CURRENT_TIMESTAMP,
+            date_retour DATETIME,
+            statut TEXT DEFAULT 'EN_COURS',
+            FOREIGN KEY (outillage_id) REFERENCES outillage(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("DELETE FROM sorties_outillage WHERE outillage_id NOT IN (SELECT id FROM outillage)")
+    conn.commit()
+
+
+def enregistrer_sortie_outillage(tool_id: int, demandeur: str, quantite: int, motif: str = "") -> int:
+    """
+    Enregistre une sortie d'outillage pour un demandeur et réduit le stock de l'outillage.
+    Lève ValueError si l'outil n'existe pas, s'il est en dehors du magasin ou si la quantité disponible est insuffisante.
+    """
+    if quantite <= 0:
+        raise ValueError("La quantité sortie doit être supérieure à zéro.")
+    if not demandeur.strip():
+        raise ValueError("Le nom du demandeur est obligatoire.")
+
+    conn = get_connection()
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM outillage WHERE id = ?", (tool_id,))
+    tool = cursor.fetchone()
+    if not tool:
+        raise ValueError("L'outil sélectionné n'existe pas dans la base de données.")
+
+    if tool['statut'] == 'En dehors du magasin':
+        raise ValueError("Cet outillage est actuellement en dehors du magasin. Impossible d'effectuer une nouvelle sortie.")
+
+    stock_actuel = tool['quantite']
+    if quantite > stock_actuel:
+        raise ValueError(f"Stock insuffisant : {stock_actuel} disponible(s), {quantite} demandé(s).")
+
+    nouveau_stock = stock_actuel - quantite
+    nouveau_statut = 'En dehors du magasin' if nouveau_stock == 0 else 'Dans le magasin'
+    date_sortie_local = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    cursor.execute("""
+        INSERT INTO sorties_outillage (outillage_id, demandeur, quantite_sortie, quantite_retournee, motif, date_sortie, statut)
+        VALUES (?, ?, ?, 0, ?, ?, 'EN_COURS')
+    """, (tool_id, demandeur.strip(), quantite, motif.strip(), date_sortie_local))
+    sortie_id = cursor.lastrowid
+
+    cursor.execute("""
+        UPDATE outillage SET quantite = ?, statut = ? WHERE id = ?
+    """, (nouveau_stock, nouveau_statut, tool_id))
+
+    conn.commit()
+    return sortie_id
+
+
+def get_sorties_outillage_en_cours(tool_id: int = None) -> list:
+    """
+    Retourne les sorties d'outillages non encore intégralement restituées (statut = 'EN_COURS').
+    Inclut également tous les outillages marqués hors magasin ou sélectionnés pour restitution.
+    """
+    conn = get_connection()
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    query = """
+        SELECT s.*, o.designation, o.numero_outillage, o.marque,
+               (s.quantite_sortie - s.quantite_retournee) as quantite_restante
+        FROM sorties_outillage s
+        JOIN outillage o ON s.outillage_id = o.id
+        WHERE s.statut = 'EN_COURS'
+    """
+    params = []
+    if tool_id is not None:
+        query += " AND s.outillage_id = ?"
+        params.append(tool_id)
+
+    query += " ORDER BY s.date_sortie DESC"
+    cursor.execute(query, params)
+    rows = [dict(r) for r in cursor.fetchall()]
+
+    active_tool_ids = {r['outillage_id'] for r in rows}
+
+    # Récupérer les outils marqués 'En dehors' ou avec stock 0 n'ayant pas de ligne d'emprunt active
+    query_orphans = "SELECT * FROM outillage WHERE (statut != 'Dans le magasin' OR statut LIKE '%dehors%' OR quantite <= 0)"
+    params_orphans = []
+    if tool_id is not None:
+        query_orphans += " AND id = ?"
+        params_orphans.append(tool_id)
+
+    cursor.execute(query_orphans, params_orphans)
+    orphans = [dict(r) for r in cursor.fetchall()]
+
+    for o in orphans:
+        if o['id'] not in active_tool_ids:
+            qte = max(1, o['quantite'])
+            rows.append({
+                'id': f"fallback_{o['id']}",
+                'outillage_id': o['id'],
+                'demandeur': 'Sortie hors magasin',
+                'quantite_sortie': qte,
+                'quantite_retournee': 0,
+                'quantite_restante': qte,
+                'motif': 'Statut Hors Magasin',
+                'date_sortie': o.get('date_ajout', ''),
+                'date_retour': None,
+                'statut': 'EN_COURS',
+                'designation': o['designation'],
+                'numero_outillage': o['numero_outillage'],
+                'marque': o.get('marque') or '-'
+            })
+            active_tool_ids.add(o['id'])
+
+    # Si un tool_id spécifique a été demandé et n'est toujours pas dans la liste, l'inclure impérativement
+    if tool_id is not None and tool_id not in active_tool_ids:
+        cursor.execute("SELECT * FROM outillage WHERE id = ?", (tool_id,))
+        t_spec = cursor.fetchone()
+        if t_spec:
+            t_dict = dict(t_spec)
+            qte = max(1, t_dict['quantite'])
+            rows.append({
+                'id': f"fallback_{t_dict['id']}",
+                'outillage_id': t_dict['id'],
+                'demandeur': 'Restitution manuelle',
+                'quantite_sortie': qte,
+                'quantite_retournee': 0,
+                'quantite_restante': qte,
+                'motif': 'Restitution directe',
+                'date_sortie': t_dict.get('date_ajout', ''),
+                'date_retour': None,
+                'statut': 'EN_COURS',
+                'designation': t_dict['designation'],
+                'numero_outillage': t_dict['numero_outillage'],
+                'marque': t_dict.get('marque') or '-'
+            })
+
+    return rows
+
+
+def enregistrer_retour_outillage(sortie_id, quantite_retour: int) -> bool:
+    """
+    Enregistre le retour (restitution) d'un outillage sorti et réintègre la quantité au stock.
+    Gère aussi bien les sorties BDD réelles que les sorties réétiquetées (fallback_ID).
+    """
+    if quantite_retour <= 0:
+        raise ValueError("La quantité retournée doit être supérieure à zéro.")
+
+    conn = get_connection()
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    date_actuelle = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    if isinstance(sortie_id, str) and sortie_id.startswith('fallback_'):
+        tool_id = int(sortie_id.replace('fallback_', ''))
+        cursor.execute("SELECT * FROM outillage WHERE id = ?", (tool_id,))
+        tool = cursor.fetchone()
+        if not tool:
+            raise ValueError("L'outillage sélectionné n'existe plus.")
+
+        qte_actuelle = tool['quantite']
+        nouveau_stock = qte_actuelle + quantite_retour
+
+        cursor.execute("""
+            INSERT INTO sorties_outillage (outillage_id, demandeur, quantite_sortie, quantite_retournee, motif, date_sortie, date_retour, statut)
+            VALUES (?, 'Restitution Hors Magasin', ?, ?, 'Restitution Manuelle', ?, ?, 'RETOURNÉ')
+        """, (tool_id, quantite_retour, quantite_retour, date_actuelle, date_actuelle))
+
+        cursor.execute("UPDATE outillage SET quantite = ?, statut = 'Dans le magasin' WHERE id = ?",
+                       (nouveau_stock, tool_id))
+        conn.commit()
+        return True
+
+    sortie_id_int = int(sortie_id)
+    cursor.execute("SELECT * FROM sorties_outillage WHERE id = ?", (sortie_id_int,))
+    sortie = cursor.fetchone()
+    if not sortie:
+        raise ValueError("La sortie spécifiée n'existe pas.")
+
+    if sortie['statut'] != 'EN_COURS':
+        raise ValueError("Cette sortie a déjà été intégralement retournée.")
+
+    restant = sortie['quantite_sortie'] - sortie['quantite_retournee']
+    if quantite_retour > restant:
+        raise ValueError(f"La quantité retournée ({quantite_retour}) dépasse la quantité restante à restituer ({restant}).")
+
+    nouvelle_qte_retournee = sortie['quantite_retournee'] + quantite_retour
+    nouveau_statut = 'RETOURNÉ' if nouvelle_qte_retournee >= sortie['quantite_sortie'] else 'EN_COURS'
+    date_retour_val = datetime.now().strftime('%Y-%m-%d %H:%M:%S') if nouveau_statut == 'RETOURNÉ' else sortie['date_retour']
+
+    cursor.execute("""
+        UPDATE sorties_outillage
+        SET quantite_retournee = ?, statut = ?, date_retour = ?
+        WHERE id = ?
+    """, (nouvelle_qte_retournee, nouveau_statut, date_retour_val, sortie_id_int))
+
+    tool_id = sortie['outillage_id']
+    cursor.execute("SELECT quantite FROM outillage WHERE id = ?", (tool_id,))
+    tool_row = cursor.fetchone()
+    qte_actuelle = tool_row['quantite'] if tool_row else 0
+    nouveau_stock = qte_actuelle + quantite_retour
+
+    cursor.execute("UPDATE outillage SET quantite = ?, statut = 'Dans le magasin' WHERE id = ?",
+                   (nouveau_stock, tool_id))
+
+    conn.commit()
+    return True
+
+
+def get_historique_sorties_outillage(search: str = "") -> list:
+    """
+    Retourne l'historique de toutes les sorties/prêts d'outillages (en cours et retournés).
+    """
+    conn = get_connection()
+    _ensure_sorties_outillage_table(conn)
+    cursor = conn.cursor()
+
+    query = """
+        SELECT s.*, o.designation, o.numero_outillage, o.marque,
+               (s.quantite_sortie - s.quantite_retournee) as quantite_restante
+        FROM sorties_outillage s
+        JOIN outillage o ON s.outillage_id = o.id
+        WHERE 1=1
+    """
+    params = []
+    if search:
+        like = f"%{search}%"
+        query += " AND (s.demandeur LIKE ? OR o.designation LIKE ? OR o.numero_outillage LIKE ? OR s.statut LIKE ?)"
+        params.extend([like, like, like, like])
+
+    query += " ORDER BY s.id DESC"
+    cursor.execute(query, params)
+    rows = [dict(r) for r in cursor.fetchall()]
+    return rows
+
+
