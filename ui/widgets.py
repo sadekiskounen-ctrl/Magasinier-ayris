@@ -518,8 +518,8 @@ class MultiSelectLignesWidget(ctk.CTkFrame):
         self.on_change = on_change
         self.check_vars = {}
 
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1, minsize=130)
+        self.grid_columnconfigure(1, weight=1, minsize=130)
 
         if default_selected is None:
             default_selected = [options[0]] if options else []
@@ -545,15 +545,15 @@ class MultiSelectLignesWidget(ctk.CTkFrame):
             )
 
             # Si l'option est longue (ex: "Aucune (Matériel Général)" ou "Compresseur"), elle prend toute la largeur
-            if len(opt) > 12:
+            if len(opt) > 10:
                 if curr_col == 1:
                     curr_row += 1
                     curr_col = 0
-                chk.grid(row=curr_row, column=0, columnspan=2, sticky='w', padx=(4, 8), pady=5)
+                chk.grid(row=curr_row, column=0, columnspan=2, sticky='w', padx=(4, 6), pady=4)
                 curr_row += 1
                 curr_col = 0
             else:
-                chk.grid(row=curr_row, column=curr_col, sticky='w', padx=(4, 8), pady=5)
+                chk.grid(row=curr_row, column=curr_col, sticky='w', padx=(4, 6), pady=4)
                 if curr_col == 1:
                     curr_row += 1
                     curr_col = 0
@@ -610,3 +610,128 @@ class SeparatorLine(ctk.CTkFrame):
             fg_color=COLORS['border'],
             **kwargs
         )
+
+
+class AutocompleteDesignationInput(ctk.CTkFrame):
+    """
+    Champ de recherche avec autocomplétion dynamique et fenêtre de suggestions haute visibilité.
+    Affiche la liste des pièces correspondantes dès la première lettre saisie.
+    Lors du choix d'une pièce, déclenche le callback on_select(produit).
+    """
+
+    def __init__(self, parent, placeholder: str = "Désignation...",
+                 textvariable=None, on_select=None, width: int = 220, **kwargs):
+        super().__init__(parent, fg_color='transparent', **kwargs)
+        self.on_select_callback = on_select
+        self.var_text = textvariable if textvariable is not None else tk.StringVar()
+        self._results = []
+        self._popup = None
+        self._search_timer = None
+
+        self.entry = ctk.CTkEntry(
+            self,
+            placeholder_text=placeholder,
+            fg_color=COLORS['bg_input'],
+            border_color=COLORS['border'],
+            border_width=1,
+            text_color=COLORS['text_primary'],
+            placeholder_text_color=COLORS['text_muted'],
+            font=FONTS['body'],
+            corner_radius=8,
+            height=42,
+            width=width,
+            textvariable=self.var_text
+        )
+        self.entry.pack(fill='x', expand=True)
+
+        self.var_text.trace_add('write', self._on_text_change)
+        self.entry.bind('<FocusOut>', self._on_focus_out)
+        self.entry.bind('<Escape>', lambda e: self._hide_popup())
+
+    def _on_text_change(self, *_):
+        if self._search_timer:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+        self._search_timer = self.after(150, self._do_search)
+
+    def _do_search(self):
+        self._search_timer = None
+        query = self.var_text.get().strip()
+        if not query:
+            self._hide_popup()
+            return
+
+        import database.db_manager as db
+        self._results = db.search_produits_by_designation(query, limit=15)
+        if self._results:
+            self._show_popup()
+        else:
+            self._hide_popup()
+
+    def _show_popup(self):
+        if self._popup is None or not self._popup.winfo_exists():
+            self._popup = ctk.CTkToplevel(self)
+            self._popup.overrideredirect(True)
+            self._popup.attributes('-topmost', True)
+            self._popup.configure(fg_color=COLORS['bg_card'])
+
+        self.update_idletasks()
+        entry_w = self.entry.winfo_width()
+        w = max(entry_w, 360)
+        h = min(len(self._results) * 56 + 16, 260)
+
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height() + 2
+
+        # Prévenir le débordement à droite de l'écran
+        sw = self.winfo_screenwidth()
+        if x + w > sw - 20:
+            x = max(10, sw - w - 20)
+
+        self._popup.geometry(f"{w}x{h}+{x}+{y}")
+
+        for child in self._popup.winfo_children():
+            child.destroy()
+
+        scroll_frame = ctk.CTkScrollableFrame(
+            self._popup, fg_color=COLORS['bg_card'],
+            border_width=2, border_color=COLORS['primary']
+        )
+        scroll_frame.pack(fill='both', expand=True)
+
+        for prod in self._results:
+            ref = prod.get('code_barres', '')
+            des = prod.get('designation', '')
+            stk = prod.get('quantite_stock', 0)
+            unite = prod.get('unite', '')
+
+            item_btn = ctk.CTkButton(
+                scroll_frame,
+                text=f"[{ref}]  {des}\n↳ Stock : {stk} {unite}",
+                anchor='w',
+                fg_color=COLORS['bg_hover'],
+                hover_color=COLORS['bg_selected'],
+                text_color=COLORS['text_primary'],
+                font=FONTS['body_bold'],
+                height=48,
+                corner_radius=6,
+                command=lambda p=prod: self._select_produit(p)
+            )
+            item_btn.pack(fill='x', padx=4, pady=3)
+
+    def _select_produit(self, prod: dict):
+        self._hide_popup()
+        self.var_text.set(prod.get('designation', ''))
+        if self.on_select_callback:
+            self.on_select_callback(prod)
+
+    def _hide_popup(self):
+        if self._popup and self._popup.winfo_exists():
+            self._popup.destroy()
+            self._popup = None
+
+    def _on_focus_out(self, event):
+        self.after(250, self._hide_popup)
+

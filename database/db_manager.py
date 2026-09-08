@@ -372,6 +372,40 @@ def find_produit_by_ref_or_last4(query: str) -> dict | None:
 find_produit_by_barcode_or_last4 = find_produit_by_ref_or_last4
 
 
+def search_produits_by_designation(query: str, limit: int = 20) -> list:
+    """
+    Recherche des produits par leur désignation ou référence pour l'autocomplétion.
+    Mets en priorité les produits dont la désignation commence par la chaîne saisie,
+    puis ceux qui la contiennent.
+    """
+    q = query.strip()
+    if not q:
+        return []
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    like_prefix = f"{q}%"
+    like_contains = f"%{q}%"
+
+    cursor.execute("""
+        SELECT p.*, f.nom as fournisseur_nom
+        FROM produits p
+        LEFT JOIN fournisseurs f ON p.fournisseur_id = f.id
+        WHERE p.designation LIKE ? OR p.code_barres LIKE ?
+        ORDER BY 
+            CASE 
+                WHEN p.designation LIKE ? THEN 1
+                WHEN p.code_barres LIKE ? THEN 2
+                ELSE 3
+            END,
+            p.designation ASC
+        LIMIT ?
+    """, (like_contains, like_contains, like_prefix, like_prefix, limit))
+
+    rows = [dict(r) for r in cursor.fetchall()]
+    return rows
+
+
 def get_produit_by_id(produit_id: int) -> dict | None:
     """Retourne un produit par ID avec infos fournisseur."""
     conn = get_connection()

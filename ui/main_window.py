@@ -43,7 +43,7 @@ class MainWindow(ctk.CTk):
             self._sidebar_width = 260
 
         self.geometry(f'{win_w}x{win_h}')
-        self.minsize(960, 600)
+        self.minsize(1080, 680)
 
         self._set_window_icon()
 

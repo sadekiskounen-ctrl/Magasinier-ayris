@@ -13,7 +13,7 @@ from ui.theme import COLORS, FONTS, SERVICES, LIGNES, get_machines_pour_lignes
 from ui.widgets import (make_primary_button, make_success_button, make_secondary_button,
                          make_input, make_combobox, SeparatorLine, make_label,
                          make_danger_button, StyledTreeview, add_scrollbar, BadgeLabel,
-                         MultiSelectLignesWidget)
+                         MultiSelectLignesWidget, AutocompleteDesignationInput)
 import database.db_manager as db
 from services.pdf_generator import generer_bon_pdf
 from services.config_manager import get_config
@@ -138,8 +138,8 @@ class SaisieFrame(ctk.CTkFrame):
 
     # ── UI MULTI-LIGNES (SORTIE, ENTREE, RETOUR) ──────────────────────────────
     def _build_ui_multi_ligne(self):
-        self.body.grid_columnconfigure(0, weight=3)
-        self.body.grid_columnconfigure(1, weight=2)
+        self.body.grid_columnconfigure(0, weight=3, minsize=450)
+        self.body.grid_columnconfigure(1, weight=2, minsize=380)
         self.body.grid_rowconfigure(0, weight=1)
 
         # ── Panneau Gauche : Document Header + Tableau des articles ───────────
@@ -311,11 +311,14 @@ class SaisieFrame(ctk.CTkFrame):
         self.var_ref.trace_add('write', self._on_ref_change)
         self.e_ref.bind('<Return>', self._on_ref_enter)
 
-        # Désignation
-        self._section_lbl(scroll_add, '📝  Désignation *')
+        # Désignation avec Autocomplétion
+        self._section_lbl(scroll_add, '📝  Désignation (Recherche auto) *')
         self.var_designation = tk.StringVar()
-        self.e_designation_directe = make_input(
-            scroll_add, placeholder='Désignation...', textvariable=self.var_designation
+        self.e_designation_directe = AutocompleteDesignationInput(
+            scroll_add,
+            placeholder='Taper pour rechercher une pièce...',
+            textvariable=self.var_designation,
+            on_select=self._on_designation_autocomplete_select
         )
         self.e_designation_directe.pack(fill='x', padx=12, pady=(0, 8))
 
@@ -375,10 +378,21 @@ class SaisieFrame(ctk.CTkFrame):
         ctk.CTkLabel(
             parent, text=text,
             font=FONTS['body_bold'],
-            text_color=COLORS['text_secondary']
+            text_color=COLORS['text_secondary'],
+            wraplength=340,
+            justify='left'
         ).pack(anchor='w', padx=12, pady=(0, 2))
 
     # ── LOGIQUE DE RECHERCHE & Saisie ──
+    def _on_designation_autocomplete_select(self, produit: dict):
+        """Quand une pièce est choisie via l'autocomplétion de désignation."""
+        if not produit:
+            return
+        code = produit.get('code_barres', '')
+        if code:
+            self.var_ref.set(code)
+            self._lookup_product(code)
+
     def _set_focus_ref(self):
         try:
             self.e_ref.focus()
