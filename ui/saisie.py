@@ -311,6 +311,15 @@ class SaisieFrame(ctk.CTkFrame):
         self.var_ref.trace_add('write', self._on_ref_change)
         self.e_ref.bind('<Return>', self._on_ref_enter)
 
+        # Dynamic reference status badge
+        self.lbl_ref_status = ctk.CTkLabel(
+            scroll_add,
+            text='',
+            font=FONTS['small_bold'],
+            corner_radius=6,
+            height=24
+        )
+
         # Désignation avec Autocomplétion
         self._section_lbl(scroll_add, '📝  Désignation (Recherche auto) *')
         self.var_designation = tk.StringVar()
@@ -326,6 +335,7 @@ class SaisieFrame(ctk.CTkFrame):
         qte_label_text = '🔢  Quantité Reçue *' if self._mode == 'ENTREE' else ('🔢  Quantité Sortie *' if self._mode == 'SORTIE' else '🔢  Quantité Retournée *')
         self._section_lbl(scroll_add, qte_label_text)
         self.var_qte = tk.StringVar(value='1')
+        self.var_qte.trace_add('write', lambda *_: self._update_ref_status())
         self.e_qte = make_input(scroll_add, placeholder='1', textvariable=self.var_qte)
         self.e_qte.pack(fill='x', padx=12, pady=(0, 8))
 
@@ -408,6 +418,7 @@ class SaisieFrame(ctk.CTkFrame):
             self._search_timer = None
 
         code = self.var_ref.get().strip()
+        self._update_ref_status()
         if len(code) >= 4:
             self._search_timer = self.after(250, lambda: self._do_debounced_lookup(code))
 
@@ -425,6 +436,66 @@ class SaisieFrame(ctk.CTkFrame):
         code = self.var_ref.get().strip()
         if code:
             self._lookup_product(code)
+
+    def _update_ref_status(self):
+        """Mets à jour l'indicateur visuel dynamique sous la référence (doublon bon, produit existant ou nouveau)."""
+        if not hasattr(self, 'lbl_ref_status'):
+            return
+
+        ref = self.var_ref.get().strip()
+        if not ref:
+            self.lbl_ref_status.pack_forget()
+            return
+
+        # 1. Vérification si la référence est déjà dans la liste du bon en cours
+        in_current_list = any(
+            art.get('reference', '').strip().upper() == ref.upper()
+            for idx, art in enumerate(self._articles_list)
+            if idx != self._editing_index
+        )
+
+        if in_current_list:
+            self.lbl_ref_status.configure(
+                text=' ⚠️ Référence déjà présente dans ce bon ! ',
+                fg_color='#7F1D1D',
+                text_color='#FCA5A5'
+            )
+            self.lbl_ref_status.pack(fill='x', padx=12, pady=(0, 6), before=self.e_designation_directe)
+            return
+
+        # 2. Vérification si la référence existe déjà en base de données
+        produit_db = db.find_produit_by_ref_or_last4(ref)
+        if produit_db and produit_db.get('code_barres', '').strip().upper() == ref.upper():
+            qte_stock = produit_db.get('quantite_stock', 0)
+            unite_str = produit_db.get('unite', 'Unité')
+            if self._mode == 'ENTREE':
+                try:
+                    q_input = int(self.var_qte.get().strip())
+                    if q_input <= 0: q_input = 0
+                except (ValueError, AttributeError):
+                    q_input = 1
+                new_total = qte_stock + q_input
+                self.lbl_ref_status.configure(
+                    text=f' ℹ️ Pièce EXISTANTE — Stock : {qte_stock} ➔ Nouveau stock après réception : {new_total} {unite_str} ',
+                    fg_color='#14532D',
+                    text_color='#86EFAC'
+                )
+            else:
+                self.lbl_ref_status.configure(
+                    text=f' ℹ️ Pièce EXISTANTE en base (Stock actuel : {qte_stock} {unite_str}) ',
+                    fg_color='#14532D',
+                    text_color='#86EFAC'
+                )
+            self.lbl_ref_status.pack(fill='x', padx=12, pady=(0, 6), before=self.e_designation_directe)
+        elif self._mode == 'ENTREE' and len(ref) >= 2:
+            self.lbl_ref_status.configure(
+                text=' 🆕 NOUVELLE Pièce (Sera créée dans le système lors de la réception) ',
+                fg_color='#1E3A8A',
+                text_color='#93C5FD'
+            )
+            self.lbl_ref_status.pack(fill='x', padx=12, pady=(0, 6), before=self.e_designation_directe)
+        else:
+            self.lbl_ref_status.pack_forget()
 
     def _lookup_product(self, code: str):
         produit = db.find_produit_by_ref_or_last4(code)
@@ -447,6 +518,7 @@ class SaisieFrame(ctk.CTkFrame):
         else:
             self._produit_actuel = None
             self._build_fiche_vide()
+        self._update_ref_status()
 
     def _build_fiche_vide(self):
         for w in self.fiche_panel.winfo_children():
@@ -548,11 +620,24 @@ class SaisieFrame(ctk.CTkFrame):
             messagebox.showerror('Erreur', 'La quantité doit être un entier positif.', parent=self)
             return
 
+        # ── Contrôle Anti-Doublon dans le Bon en cours ────────────────────────
+        for idx, art in enumerate(self._articles_list):
+            if idx != self._editing_index and art.get('reference', '').strip().upper() == reference.upper():
+                doc_name = 'Bon de Réception' if self._mode == 'ENTREE' else ('Bon de Sortie' if self._mode == 'SORTIE' else 'Bon de Retour')
+                messagebox.showwarning(
+                    'Doublon Détecté',
+                    f'La référence "{reference}" est déjà présente dans la liste de ce {doc_name} !\n\n'
+                    'Veuillez modifier la ligne existante dans le tableau pour ajuster sa quantité.',
+                    parent=self
+                )
+                return
+
+        # Tenter d'associer automatiquement au produit existant en base si non fait
+        if not self._produit_actuel:
+            self._produit_actuel = db.find_produit_by_ref_or_last4(reference)
+
         # Contrôle de stock strict pour la Sortie (Bon de Sortie)
         if self._mode == 'SORTIE':
-            if not self._produit_actuel:
-                self._produit_actuel = db.find_produit_by_ref_or_last4(reference)
-
             if not self._produit_actuel:
                 messagebox.showerror('Erreur Stock', 'Cet article n\'est pas disponible en stock.', parent=self)
                 return
@@ -600,6 +685,7 @@ class SaisieFrame(ctk.CTkFrame):
         self._build_fiche_vide()
         if hasattr(self, 'btn_ajouter_ligne'):
             self.btn_ajouter_ligne.configure(text='➕ Ajouter à la Liste')
+        self._update_ref_status()
         self._set_focus_ref()
 
     def _supprimer_ligne(self):

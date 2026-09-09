@@ -878,19 +878,14 @@ def enregistrer_mouvements_multiples(articles: list, type_mvt: str, beneficiaire
 
         if row:
             pid = row['id']
-            # Mettre à jour désignation, ligne, machine et fournisseur
+            # Ne pas écraser la désignation, la ligne ou la machine existantes du catalogue.
+            # Mettre à jour le fournisseur_id uniquement si la pièce n'en avait pas encore.
             if fournisseur_id:
                 cursor.execute("""
                     UPDATE produits
-                    SET designation = ?, utilite_ligne = ?, nom_machine = ?, fournisseur_id = ?
+                    SET fournisseur_id = COALESCE(fournisseur_id, ?)
                     WHERE id = ?
-                """, (designation, utilite_ligne, nom_machine, fournisseur_id, pid))
-            else:
-                cursor.execute("""
-                    UPDATE produits
-                    SET designation = ?, utilite_ligne = ?, nom_machine = ?
-                    WHERE id = ?
-                """, (designation, utilite_ligne, nom_machine, pid))
+                """, (fournisseur_id, pid))
         else:
             if type_mvt == 'SORTIE':
                 raise ValueError(f"Cet article ({ref} - {designation}) n'est pas disponible en stock.")
