@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 build/
 dist/
+!dist/SARL_Ayris_Stock.exe
 *.spec
 *.db
 
