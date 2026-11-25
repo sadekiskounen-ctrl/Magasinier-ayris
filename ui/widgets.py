@@ -534,7 +534,7 @@ class MultiSelectLignesWidget(ctk.CTkFrame):
                 self,
                 text=opt,
                 variable=var,
-                command=self._on_toggle,
+                command=lambda o=opt: self._on_checkbox_click(o),
                 fg_color=COLORS['primary'],
                 hover_color=COLORS['primary_dark'],
                 text_color=COLORS['text_primary'],
@@ -544,7 +544,7 @@ class MultiSelectLignesWidget(ctk.CTkFrame):
                 checkbox_height=20
             )
 
-            # Si l'option est longue (ex: "Aucune (Matériel Général)" ou "Compresseur"), elle prend toute la largeur
+            # Si l'option est longue (ex: "Aucune (Matériel Général)" ou "Groupe Électrogène"), elle prend toute la largeur
             if len(opt) > 10:
                 if curr_col == 1:
                     curr_row += 1
@@ -559,6 +559,19 @@ class MultiSelectLignesWidget(ctk.CTkFrame):
                     curr_col = 0
                 else:
                     curr_col = 1
+
+    def _on_checkbox_click(self, clicked_opt: str):
+        if clicked_opt in ('Groupe Électrogène', 'Aucune (Matériel Général)') and self.check_vars[clicked_opt].get():
+            # Décocher les autres options pour isoler Groupe Électrogène / Matériel Général
+            for opt, var in self.check_vars.items():
+                if opt != clicked_opt:
+                    var.set(False)
+        elif self.check_vars.get(clicked_opt) and self.check_vars[clicked_opt].get():
+            # Décocher Groupe Électrogène et Aucune si une ligne de production est cochée
+            for special in ('Groupe Électrogène', 'Aucune (Matériel Général)'):
+                if special in self.check_vars:
+                    self.check_vars[special].set(False)
+        self._on_toggle()
 
     def _on_toggle(self):
         if self.on_change:
@@ -627,6 +640,7 @@ class AutocompleteDesignationInput(ctk.CTkFrame):
         self._results = []
         self._popup = None
         self._search_timer = None
+        self._selecting = False  # flag pour bloquer la recherche lors d'une sélection
 
         self.entry = ctk.CTkEntry(
             self,
@@ -649,6 +663,9 @@ class AutocompleteDesignationInput(ctk.CTkFrame):
         self.entry.bind('<Escape>', lambda e: self._hide_popup())
 
     def _on_text_change(self, *_):
+        # Ne pas lancer une recherche si on est en train de sélectionner un élément
+        if self._selecting:
+            return
         if self._search_timer:
             try:
                 self.after_cancel(self._search_timer)
@@ -657,7 +674,12 @@ class AutocompleteDesignationInput(ctk.CTkFrame):
         self._search_timer = self.after(150, self._do_search)
 
     def _do_search(self):
-        self._search_timer = None
+        if self._search_timer:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
         query = self.var_text.get().strip()
         if not query:
             self._hide_popup()
@@ -722,10 +744,14 @@ class AutocompleteDesignationInput(ctk.CTkFrame):
             item_btn.pack(fill='x', padx=4, pady=3)
 
     def _select_produit(self, prod: dict):
+        self._selecting = True  # bloquer le déclenchement de recherche
         self._hide_popup()
-        self.var_text.set(prod.get('designation', ''))
-        if self.on_select_callback:
-            self.on_select_callback(prod)
+        try:
+            self.var_text.set(prod.get('designation', ''))
+            if self.on_select_callback:
+                self.on_select_callback(prod)
+        finally:
+            self._selecting = False
 
     def _hide_popup(self):
         if self._popup and self._popup.winfo_exists():
@@ -733,5 +759,321 @@ class AutocompleteDesignationInput(ctk.CTkFrame):
             self._popup = None
 
     def _on_focus_out(self, event):
-        self.after(250, self._hide_popup)
+        # Délai court pour permettre le clic sur un bouton de la popup avant de la fermer
+        self.after(200, self._hide_popup_if_not_selecting)
+
+    def _hide_popup_if_not_selecting(self):
+        if not self._selecting:
+            self._hide_popup()
+
+
+# ─── AUTOCOMPLÉTION OUTILLAGE DYNAMIQUE (COMMENCE PAR, INSENSIBLE CASSE/ACCENT) ───
+
+class AutocompleteOutillageInput(ctk.CTkFrame):
+    """
+    Champ de saisie pour l'Outillage avec autocomplétion dynamique et menu déroulant sous le champ :
+    - Filtrage 'commence par', insensible à la casse et aux accents.
+    - Suggestions lues dynamiquement depuis la table SQLite 'outillage' (lecture seule).
+    - Clavier (flèches Haut/Bas puis Entrée pour sélectionner, Échap pour fermer).
+    - Souris (survol fluide et clic pour sélectionner).
+    - Focus maintenu dans le champ de saisie pendant l'affichage des suggestions.
+    - Largeur de la liste exactement identique à celle du champ de saisie.
+    - Environ 8 suggestions visibles max avec barre de défilement si > 8.
+    - Si vide ou aucun résultat : liste masquée et saisie libre autorisée.
+    - Fermeture automatique par Échap ou clic en dehors.
+    """
+
+    def __init__(self, parent, placeholder: str = "Nom de l'outillage...",
+                 textvariable=None, on_select=None, width: int = 280, **kwargs):
+        super().__init__(parent, fg_color='transparent', **kwargs)
+        self.on_select_callback = on_select
+        self.var_text = textvariable if textvariable is not None else tk.StringVar()
+        self._suggestions = []
+        self._selected_tool = None
+        self._popup = None
+        self._listbox = None
+        self._scrollbar = None
+        self._container = None
+        self._selecting = False
+        self._search_timer = None
+
+        self.entry = ctk.CTkEntry(
+            self,
+            placeholder_text=placeholder,
+            fg_color=COLORS['bg_input'],
+            border_color=COLORS['border'],
+            border_width=1,
+            text_color=COLORS['text_primary'],
+            placeholder_text_color=COLORS['text_muted'],
+            font=FONTS['body'],
+            corner_radius=8,
+            height=42,
+            width=width,
+            textvariable=self.var_text
+        )
+        self.entry.pack(fill='x', expand=True)
+
+        # Écoutes d'événements
+        self.var_text.trace_add('write', self._on_text_change)
+        self.entry.bind('<Down>', self._on_key_down)
+        self.entry.bind('<Up>', self._on_key_up)
+        self.entry.bind('<Return>', self._on_key_enter)
+        self.entry.bind('<KP_Enter>', self._on_key_enter)
+        self.entry.bind('<Escape>', self._on_key_escape)
+        self.entry.bind('<FocusOut>', self._on_focus_out)
+
+    def _on_text_change(self, *_):
+        if self._selecting:
+            return
+        if self._search_timer:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+        self._search_timer = self.after(30, self._do_search)
+
+    def _do_search(self):
+        if self._search_timer:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
+        query = self.var_text.get()
+        if not query or not query.strip():
+            self._hide_popup()
+            self._selected_tool = None
+            return
+
+        import database.db_manager as db
+        self._suggestions = db.get_suggestions_outillage(query)
+        if self._suggestions:
+            self._show_popup()
+        else:
+            self._hide_popup()
+
+    def _show_popup(self):
+        if not self._suggestions:
+            self._hide_popup()
+            return
+
+        top = self.winfo_toplevel()
+        if self._popup is None or not self._popup.winfo_exists():
+            self._popup = tk.Toplevel(top)
+            self._popup.overrideredirect(True)
+            self._popup.attributes('-topmost', True)
+            self._popup.configure(bg=COLORS['primary'])
+
+            self._container = tk.Frame(self._popup, bg=COLORS['bg_card'], bd=1, relief='solid')
+            self._container.pack(fill='both', expand=True)
+
+            self._listbox = tk.Listbox(
+                self._container,
+                font=('Segoe UI', 11),
+                bg=COLORS['bg_card'],
+                fg=COLORS['text_primary'],
+                selectbackground=COLORS['primary'],
+                selectforeground='white',
+                activestyle='none',
+                exportselection=False,
+                bd=0,
+                highlightthickness=0,
+                cursor='hand2'
+            )
+
+            self._scrollbar = ttk.Scrollbar(self._container, orient='vertical', command=self._listbox.yview)
+            self._listbox.configure(yscrollcommand=self._scrollbar.set)
+
+            self._listbox.bind('<ButtonRelease-1>', self._on_listbox_click)
+            self._listbox.bind('<Motion>', self._on_listbox_motion)
+
+        # Remplir les suggestions
+        self._listbox.delete(0, tk.END)
+        for item in self._suggestions:
+            des = item.get('designation', '')
+            num = item.get('numero_outillage', '')
+            mrq = item.get('marque', '')
+
+            extra = []
+            if num:
+                extra.append(f"N° {num}")
+            if mrq:
+                extra.append(mrq)
+
+            if extra:
+                label = f"{des}   ({', '.join(extra)})"
+            else:
+                label = des
+            self._listbox.insert(tk.END, f"  {label}")
+
+        n = len(self._suggestions)
+        vis = min(n, 8)
+        self._listbox.configure(height=vis)
+
+        if n > 8:
+            self._scrollbar.pack(side='right', fill='y')
+        else:
+            self._scrollbar.pack_forget()
+
+        self._listbox.pack(side='left', fill='both', expand=True)
+
+        # Positionnement et dimensionnement précis (même largeur que le champ)
+        self.update_idletasks()
+        self.entry.update_idletasks()
+
+        w = self.entry.winfo_width()
+        if w < 100:
+            w = self.winfo_width()
+        if w < 100:
+            w = 320
+
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height() + 1
+
+        self._popup.update_idletasks()
+        h = self._popup.winfo_reqheight()
+
+        # Protection contre débordements écran (résolutions variées, DPI scaling)
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+
+        if x + w > screen_w - 10:
+            x = max(10, screen_w - w - 10)
+
+        if y + h > screen_h - 10:
+            # Afficher au-dessus si l'espace inférieur est insuffisant
+            y = max(10, self.entry.winfo_rooty() - h - 1)
+
+        self._popup.geometry(f"{w}x{h}+{x}+{y}")
+        self._popup.deiconify()
+        self._popup.lift()
+
+    def _on_key_down(self, event):
+        if not self._is_popup_visible():
+            self._do_search()
+            return 'break'
+        size = self._listbox.size()
+        if size == 0:
+            return 'break'
+        sel = self._listbox.curselection()
+        idx = (sel[0] + 1) if sel else 0
+        if idx >= size:
+            idx = size - 1
+        self._listbox.selection_clear(0, tk.END)
+        self._listbox.selection_set(idx)
+        self._listbox.activate(idx)
+        self._listbox.see(idx)
+        return 'break'
+
+    def _on_key_up(self, event):
+        if not self._is_popup_visible():
+            return 'break'
+        size = self._listbox.size()
+        if size == 0:
+            return 'break'
+        sel = self._listbox.curselection()
+        idx = (sel[0] - 1) if sel else 0
+        if idx < 0:
+            idx = 0
+        self._listbox.selection_clear(0, tk.END)
+        self._listbox.selection_set(idx)
+        self._listbox.activate(idx)
+        self._listbox.see(idx)
+        return 'break'
+
+    def _on_key_enter(self, event):
+        if self._is_popup_visible():
+            sel = self._listbox.curselection()
+            if sel:
+                self._select_index(sel[0])
+                return 'break'
+            else:
+                self._hide_popup()
+
+    def _on_key_escape(self, event):
+        if self._is_popup_visible():
+            self._hide_popup()
+            return 'break'
+
+    def _on_listbox_motion(self, event):
+        if self._listbox and self._listbox.winfo_exists():
+            idx = self._listbox.nearest(event.y)
+            if 0 <= idx < len(self._suggestions):
+                self._listbox.selection_clear(0, tk.END)
+                self._listbox.selection_set(idx)
+                self._listbox.activate(idx)
+
+    def _on_listbox_click(self, event):
+        if self._listbox and self._listbox.winfo_exists():
+            idx = self._listbox.nearest(event.y)
+            if 0 <= idx < len(self._suggestions):
+                self._select_index(idx)
+
+    def _select_index(self, idx: int):
+        if 0 <= idx < len(self._suggestions):
+            item = self._suggestions[idx]
+            self._selected_tool = item
+            self._selecting = True
+            self._hide_popup()
+            try:
+                self.var_text.set(item.get('designation', ''))
+                self.entry.icursor(tk.END)
+                if self.on_select_callback:
+                    self.on_select_callback(item)
+            finally:
+                self._selecting = False
+
+    def _on_focus_out(self, event):
+        self.after(180, self._check_focus_out)
+
+    def _check_focus_out(self):
+        if self._selecting:
+            return
+        try:
+            focused = self.focus_get()
+            if self._popup and self._popup.winfo_exists():
+                if focused not in (self.entry, self._listbox, self._scrollbar, self._popup):
+                    self._hide_popup()
+        except Exception:
+            self._hide_popup()
+
+    def _is_popup_visible(self) -> bool:
+        return self._popup is not None and self._popup.winfo_exists() and self._popup.winfo_viewable()
+
+    def _hide_popup(self):
+        if self._search_timer:
+            try:
+                self.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
+        if self._popup and self._popup.winfo_exists():
+            self._popup.destroy()
+            self._popup = None
+            self._listbox = None
+            self._scrollbar = None
+            self._container = None
+
+    def get(self) -> str:
+        """Retourne la valeur saisie dans le champ."""
+        return self.var_text.get().strip()
+
+    def set(self, val: str):
+        """Définit la valeur du champ sans déclencher la recherche popup."""
+        self._selecting = True
+        try:
+            self.var_text.set(val)
+        finally:
+            self._selecting = False
+
+    def get_selected_tool(self) -> dict | None:
+        """Retourne l'objet outillage sélectionné depuis la liste s'il existe."""
+        return self._selected_tool
+
+    def set_selected_tool(self, tool: dict):
+        """Présélectionne un outil (nom et métadonnées)."""
+        self._selected_tool = tool
+        if tool:
+            self.set(tool.get('designation', ''))
+
 

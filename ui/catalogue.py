@@ -10,10 +10,12 @@ from tkinter import messagebox
 from ui.theme import (COLORS, FONTS, LIGNES, UNITES, MACHINES_SPECIFIQUES,
                       get_machines_pour_lignes, SOUS_LIGNES_CONVOYEUR, SOUS_LIGNES_COMPRESSEUR)
 from ui.widgets import (StyledTreeview, add_scrollbar, make_primary_button,
-                         make_danger_button, make_secondary_button,
+                         make_danger_button, make_secondary_button, make_success_button,
                          make_input, make_combobox, SearchBar, SeparatorLine,
                          MultiSelectLignesWidget)
 import database.db_manager as db
+from services.excel_generator import exporter_catalogue_excel
+from ui.photo_viewer import ouvrir_photo_viewer
 
 
 class CatalogueFrame(ctk.CTkFrame):
@@ -25,6 +27,7 @@ class CatalogueFrame(ctk.CTkFrame):
         self._selected_lignes = set()       # vide = Toutes
         self._selected_machines = set()     # vide = Toutes
         self._selected_categories = set()   # vide = Toutes
+        self._filter_stock_alerte = False   # False = Tous, True = Seulement en alerte
         self._search_timer = None
         self._build_ui()
         self.refresh()
@@ -69,10 +72,19 @@ class CatalogueFrame(ctk.CTkFrame):
         )
         self.btn_edit.pack(side='left', padx=4)
 
+        self.btn_photo = make_secondary_button(
+            btn_frame, '📷 Photo', command=self._open_photo_modal, width=110
+        )
+        self.btn_photo.pack(side='left', padx=4)
+
         self.btn_del = make_danger_button(
             btn_frame, '🗑️ Supprimer', command=self._delete_selected, width=120
         )
         self.btn_del.pack(side='left', padx=4)
+
+        make_success_button(
+            btn_frame, '📊 Exporter vers Excel', command=self._exporter_excel, width=170
+        ).pack(side='left', padx=4)
 
         SeparatorLine(self).pack(fill='x', padx=24)
 
@@ -131,6 +143,21 @@ class CatalogueFrame(ctk.CTkFrame):
         )
         self.btn_filter_machine.pack(side='left', padx=(0, 8))
 
+        # Bouton filtre Stock Alerte
+        self.btn_filter_alerte = ctk.CTkButton(
+            filter_row,
+            text='⚠️ Stock Alerte : Tous ▾',
+            command=self._toggle_stock_alerte_filter,
+            fg_color=COLORS['bg_input'],
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['text_primary'],
+            border_color=COLORS['border'],
+            border_width=1,
+            font=FONTS['body_bold'],
+            corner_radius=8, height=40, width=170
+        )
+        self.btn_filter_alerte.pack(side='left', padx=(0, 8))
+
         make_secondary_button(
             filter_row, '✖ Réinitialiser', command=self._reset_filters, width=130
         ).pack(side='left')
@@ -148,11 +175,11 @@ class CatalogueFrame(ctk.CTkFrame):
 
         self.tv = StyledTreeview(
             inner,
-            columns=['alerte', 'code', 'designation', 'fournisseur', 'categorie', 'emplacement', 'stock',
+            columns=['alerte', 'date_enreg', 'code', 'designation', 'fournisseur', 'categorie', 'emplacement', 'stock',
                      'unite', 'seuil', 'ligne', 'machine', 'rechange'],
-            headings=['⚠️', 'Référence', 'Désignation', 'Fournisseur', 'Catégorie', 'Emplacement', 'Stock',
+            headings=['⚠️', 'Date Enreg.', 'Référence', 'Désignation', 'Fournisseur', 'Catégorie', 'Emplacement', 'Stock',
                       'Unité', 'Seuil', 'Ligne(s)', 'Machine', 'Prochaine Rechange'],
-            col_widths=[36, 120, 220, 140, 140, 120, 65, 65, 55, 120, 120, 130],
+            col_widths=[36, 105, 120, 220, 140, 140, 120, 65, 65, 55, 120, 120, 130],
             stretch_cols=True
         )
         self.tv.pack(side='left', fill='both', expand=True)
@@ -236,6 +263,25 @@ class CatalogueFrame(ctk.CTkFrame):
                                               fg_color=COLORS['bg_input'], text_color=COLORS['text_primary'])
         self.refresh()
 
+    def _toggle_stock_alerte_filter(self):
+        """Bascule le filtre Stock Alerte (seuls les articles dont le stock <= seuil)."""
+        self._filter_stock_alerte = not self._filter_stock_alerte
+        if self._filter_stock_alerte:
+            self.btn_filter_alerte.configure(
+                text='⚠️ Stock Alerte : Oui',
+                fg_color=COLORS['danger'],
+                text_color=COLORS['text_white'],
+                hover_color=COLORS['danger']
+            )
+        else:
+            self.btn_filter_alerte.configure(
+                text='⚠️ Stock Alerte : Tous ▾',
+                fg_color=COLORS['bg_input'],
+                text_color=COLORS['text_primary'],
+                hover_color=COLORS['bg_hover']
+            )
+        self.refresh()
+
     def _show_multi_filter_popup(self, title: str, options: list,
                                   selected_set: set, on_apply, anchor_widget):
         """Affiche un popup de sélection multiple ancré sous le bouton avec boutons toujours visibles."""
@@ -293,12 +339,16 @@ class CatalogueFrame(ctk.CTkFrame):
         self._selected_lignes = set()
         self._selected_machines = set()
         self._selected_categories = set()
+        self._filter_stock_alerte = False
         self.btn_filter_cat.configure(text='🏷️ Catégorie : Toutes ▾',
                                       fg_color=COLORS['bg_input'], text_color=COLORS['text_primary'])
         self.btn_filter_ligne.configure(text='🏭 Ligne : Toutes ▾',
                                         fg_color=COLORS['bg_input'], text_color=COLORS['text_primary'])
         self.btn_filter_machine.configure(text='⚙️ Machine : Toutes ▾',
                                           fg_color=COLORS['bg_input'], text_color=COLORS['text_primary'])
+        self.btn_filter_alerte.configure(text='⚠️ Stock Alerte : Tous ▾',
+                                         fg_color=COLORS['bg_input'], text_color=COLORS['text_primary'],
+                                         hover_color=COLORS['bg_hover'])
         self.refresh()
 
     def _on_search(self, term: str):
@@ -316,10 +366,8 @@ class CatalogueFrame(ctk.CTkFrame):
         self._search_term = term.strip()
         self.refresh()
 
-    def refresh(self):
-        for item in self.tv.get_children():
-            self.tv.delete(item)
-
+    def _get_filtered_produits(self) -> list:
+        """Retourne la liste des pièces de rechange filtrées selon la recherche, la catégorie, la ligne et la machine."""
         if self._search_term and len(self._search_term) <= 4:
             matched = db.find_produit_by_ref_or_last4(self._search_term)
             produits = [matched] if matched else db.get_all_produits(self._search_term)
@@ -340,25 +388,53 @@ class CatalogueFrame(ctk.CTkFrame):
         if self._selected_machines:
             produits = [p for p in produits if (p.get('nom_machine') or '') in self._selected_machines]
 
-        nb_alerts = sum(1 for p in produits if p['quantite_stock'] <= p['seuil_alerte'])
+        # Filtre Stock Alerte
+        if self._filter_stock_alerte:
+            produits = [p for p in produits if float(p.get('quantite_stock', 0) or 0) <= float(p.get('seuil_alerte', 5) or 5)]
+
+        return produits
+
+    def refresh(self):
+        for item in self.tv.get_children():
+            self.tv.delete(item)
+
+        produits = self._get_filtered_produits()
+        nb_alerts = sum(1 for p in produits if float(p.get('quantite_stock', 0) or 0) <= float(p.get('seuil_alerte', 5) or 5))
         self.badge_total.configure(text=f'{len(produits)} référence(s)')
         self.badge_alerts.configure(
             text=f'  ⚠️ {nb_alerts} alerte(s) de stock  ' if nb_alerts > 0 else ''
         )
 
         for i, p in enumerate(produits):
-            en_alerte = p['quantite_stock'] <= p['seuil_alerte']
+            en_alerte = float(p.get('quantite_stock', 0) or 0) <= float(p.get('seuil_alerte', 5) or 5)
             tag = 'alert' if en_alerte else ('even' if i % 2 == 0 else 'odd')
+
+            # Formatage propre de la quantité (sans .0 si entier)
+            stk_val = p.get('quantite_stock', 0)
+            try:
+                f_stk = float(stk_val)
+                stk_str = str(int(f_stk)) if f_stk.is_integer() else f"{f_stk:g}"
+            except Exception:
+                stk_str = str(stk_val)
+
+            seuil_val = p.get('seuil_alerte', 5)
+            try:
+                f_seuil = float(seuil_val)
+                seuil_str = str(int(f_seuil)) if f_seuil.is_integer() else f"{f_seuil:g}"
+            except Exception:
+                seuil_str = str(seuil_val)
+
             self.tv.insert('', 'end', iid=str(p['id']), values=(
                 '⚠️' if en_alerte else '',
+                p.get('date_enregistrement') or '—',
                 p['code_barres'],
                 p['designation'],
                 p.get('fournisseur_nom') or '—',
                 p.get('categorie_piece') or 'Pièce de Rechange',
                 p['emplacement'] or '—',
-                f"{p['quantite_stock']}",
+                stk_str,
                 p['unite'],
-                str(p['seuil_alerte']),
+                seuil_str,
                 p['utilite_ligne'] or '—',
                 p['nom_machine'] or '—',
                 p.get('prochaine_date_rechange') or '—'
@@ -383,6 +459,12 @@ class CatalogueFrame(ctk.CTkFrame):
         if produit:
             ProductModal(self, mode='edit', produit=produit, on_save=self.refresh)
 
+    def _open_photo_modal(self):
+        pid = self._get_selected_id()
+        if pid is None:
+            return
+        ouvrir_photo_viewer(self, piece_id=pid, on_update=self.refresh)
+
     def _delete_selected(self):
         pid = self._get_selected_id()
         if pid is None:
@@ -400,6 +482,53 @@ class CatalogueFrame(ctk.CTkFrame):
             db.supprimer_produit(pid)
             self.refresh()
 
+    def _exporter_excel(self):
+        """Exporte les pièces de rechange actuellement filtrées vers un fichier Excel (.xlsx)."""
+        from tkinter import filedialog
+        import os
+        from datetime import datetime
+
+        produits = self._get_filtered_produits()
+        if not produits:
+            messagebox.showwarning('Export Excel', 'Aucune pièce de rechange ne correspond aux filtres actuels.', parent=self)
+            return
+
+        date_str = datetime.now().strftime('%Y%m%d_%H%M')
+        if self._filter_stock_alerte:
+            default_filename = f"Export_Produits_Alerte_Stock_AYRIS_{date_str}.xlsx"
+            dialog_title = "Enregistrer l'export Excel des Produits en Alerte Stock"
+        else:
+            default_filename = f"Export_Pieces_Rechange_AYRIS_{date_str}.xlsx"
+            dialog_title = "Enregistrer l'export Excel des Pièces de Rechange"
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title=dialog_title,
+            initialfile=default_filename,
+            defaultextension=".xlsx",
+            filetypes=[("Fichiers Excel", "*.xlsx")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            exporter_catalogue_excel(produits, file_path)
+            export_msg = (
+                f'La liste de {len(produits)} produit(s) en alerte de stock a été exportée avec succès !'
+                if self._filter_stock_alerte else
+                f'Le catalogue de {len(produits)} pièce(s) de rechange a été exporté avec succès !'
+            )
+            messagebox.showinfo(
+                '✅ Export Réussi',
+                f'{export_msg}\n\nFichier : {file_path}',
+                parent=self
+            )
+            if messagebox.askyesno('Ouvrir Excel', 'Voulez-vous ouvrir le fichier Excel généré ?', parent=self):
+                os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror('Erreur Export', f'Échec de la génération du fichier Excel :\n{e}', parent=self)
+
 
 # ─────────────────────── Modale Produit ───────────────────────────────────────
 
@@ -414,7 +543,7 @@ class ProductModal(ctk.CTkToplevel):
         self.preselect_fournisseur_id = preselect_fournisseur_id
 
         self.title('➕  Nouveau Produit' if mode == 'add' else '✏️  Modifier le Produit')
-        self.geometry('720x760')
+        self.geometry('720x800')
         self.resizable(False, False)
         self.configure(fg_color=COLORS['bg_dark'])
         self.grab_set()
@@ -422,7 +551,7 @@ class ProductModal(ctk.CTkToplevel):
 
         # Centrer la fenêtre modale sur l'écran
         self.update_idletasks()
-        w, h = 720, 760
+        w, h = 720, 800
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         x = max(0, (sw - w) // 2)
         y = max(0, (sh - h) // 2)
@@ -431,8 +560,12 @@ class ProductModal(ctk.CTkToplevel):
         self._build_ui()
         if mode == 'edit' and produit:
             self._fill_fields()
-        elif mode == 'add' and preselect_fournisseur_id:
-            self._preselect_fournisseur(preselect_fournisseur_id)
+        elif mode == 'add':
+            from datetime import datetime
+            self.e_date_enreg.delete(0, 'end')
+            self.e_date_enreg.insert(0, datetime.now().strftime('%Y-%m-%d'))
+            if preselect_fournisseur_id:
+                self._preselect_fournisseur(preselect_fournisseur_id)
 
     def _build_ui(self):
         # ── BOUTONS EN BAS EN PREMIER (Fixes et toujours visibles) ─
@@ -474,6 +607,21 @@ class ProductModal(ctk.CTkToplevel):
             w.pack(side='left', fill='x', expand=True)
             return w
 
+        # Champ Date d'enregistrement (vide par défaut)
+        frame_date_enreg = ctk.CTkFrame(scroll, fg_color='transparent')
+        frame_date_enreg.pack(fill='x', pady=5)
+        ctk.CTkLabel(frame_date_enreg, text="Date d'enregistrement", font=FONTS['body_bold'],
+                     text_color=COLORS['text_secondary'], width=165, anchor='w').pack(side='left')
+        self.e_date_enreg = make_input(frame_date_enreg, placeholder='AAAA-MM-JJ (ex: 2026-10-12)')
+        self.e_date_enreg.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        def _set_today_enreg():
+            from datetime import datetime
+            self.e_date_enreg.delete(0, 'end')
+            self.e_date_enreg.insert(0, datetime.now().strftime('%Y-%m-%d'))
+
+        make_secondary_button(frame_date_enreg, "Aujourd'hui", command=_set_today_enreg, width=105, height=36).pack(side='left')
+
         # Champ Fournisseur
         frame_fourn = ctk.CTkFrame(scroll, fg_color='transparent')
         frame_fourn.pack(fill='x', pady=5)
@@ -490,7 +638,21 @@ class ProductModal(ctk.CTkToplevel):
 
         make_secondary_button(frame_fourn, '＋ Nouveau', command=self._quick_add_fournisseur, width=100, height=36).pack(side='left')
 
-        self.e_code    = row('Référence *',     make_input, placeholder='Ex: REF-8820')
+        # Champ Référence avec Auto-Génération
+        frame_code = ctk.CTkFrame(scroll, fg_color='transparent')
+        frame_code.pack(fill='x', pady=5)
+        ctk.CTkLabel(frame_code, text='Référence *', font=FONTS['body_bold'],
+                     text_color=COLORS['text_secondary'], width=165, anchor='w').pack(side='left')
+        self.e_code = make_input(frame_code, placeholder='Ex: REF-8820')
+        self.e_code.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        def _auto_ref_catalogue():
+            ref = db.generer_reference_unique()
+            self.e_code.delete(0, 'end')
+            self.e_code.insert(0, ref)
+
+        make_secondary_button(frame_code, '⚡ Auto Réf', command=_auto_ref_catalogue, width=110, height=36).pack(side='left')
+
         self.e_design  = row('Désignation *',   make_input, placeholder='Nom du produit')
 
         # Champ Catégorie Pièce
@@ -591,6 +753,43 @@ class ProductModal(ctk.CTkToplevel):
 
         make_secondary_button(frame_date_proch, '⚡ Calculer', command=self._try_auto_calc_prochaine_date, width=100, height=36).pack(side='left')
 
+        # ── SECTION PHOTO DE LA PIÈCE (Optionnelle) ──────────────────────────
+        SeparatorLine(scroll).pack(fill='x', pady=12)
+
+        sec_photo = ctk.CTkFrame(scroll, fg_color='transparent')
+        sec_photo.pack(fill='x', pady=(0, 6))
+        ctk.CTkLabel(
+            sec_photo, text='📷  Photo de la Pièce (Optionnel)',
+            font=FONTS['subtitle'], text_color=COLORS['primary']
+        ).pack(side='left')
+
+        frame_photo = ctk.CTkFrame(scroll, fg_color=COLORS['bg_hover'], corner_radius=8)
+        frame_photo.pack(fill='x', pady=4)
+
+        ctk.CTkLabel(frame_photo, text='Photo :', font=FONTS['body_bold'],
+                     text_color=COLORS['text_secondary'], width=165, anchor='w').pack(side='left', padx=10, pady=8)
+
+        self._pending_photo_path = None  # Fichier sélectionné par le magasinier en mode add ou edit
+
+        self.lbl_photo_status = ctk.CTkLabel(
+            frame_photo, text='Aucune photo sélectionnée',
+            font=FONTS['small'], text_color=COLORS['text_muted']
+        )
+        self.lbl_photo_status.pack(side='left', fill='x', expand=True, padx=4)
+
+        self.btn_select_photo = make_secondary_button(
+            frame_photo, '📷 Choisir photo',
+            command=self._choisir_photo, width=140, height=34
+        )
+        self.btn_select_photo.pack(side='right', padx=10, pady=8)
+
+        self.btn_voir_photo = make_secondary_button(
+            frame_photo, '👁️ Voir',
+            command=self._voir_photo_actuelle, width=80, height=34
+        )
+        self.btn_voir_photo.pack(side='right', padx=(0, 4), pady=8)
+        self.btn_voir_photo.configure(state='disabled')
+
     def _quick_add_fournisseur(self):
         """Ouvre une modale rapide pour ajouter un nouveau fournisseur sans quitter la création de produit."""
         from ui.fournisseurs import FournisseurModal
@@ -667,8 +866,41 @@ class ProductModal(ctk.CTkToplevel):
         self.e_code.insert(0, p.get('code_barres', ''))
         self.e_design.insert(0, p.get('designation', ''))
         self.e_emplace.insert(0, p.get('emplacement', ''))
-        self.e_qte.insert(0, str(p.get('quantite_stock', 0)))
-        self.e_seuil.insert(0, str(p.get('seuil_alerte', 5)))
+
+        # Formatage de la quantité et seuil (décimaux si nécessaire)
+        qte_val = p.get('quantite_stock', 0)
+        try:
+            f_qte = float(qte_val)
+            qte_str = str(int(f_qte)) if f_qte.is_integer() else str(f_qte)
+        except Exception:
+            qte_str = str(qte_val)
+        self.e_qte.insert(0, qte_str)
+
+        seuil_val = p.get('seuil_alerte', 5)
+        try:
+            f_seuil = float(seuil_val)
+            seuil_str = str(int(f_seuil)) if f_seuil.is_integer() else str(f_seuil)
+        except Exception:
+            seuil_str = str(seuil_val)
+        self.e_seuil.insert(0, seuil_str)
+
+        # Date d'enregistrement
+        self.e_date_enreg.delete(0, 'end')
+        date_enreg = p.get('date_enregistrement') or ''
+        if not date_enreg and p.get('id'):
+            try:
+                conn_hist = db.get_connection()
+                cur_hist = conn_hist.cursor()
+                row_m = cur_hist.execute(
+                    "SELECT date(date_heure) as d FROM mouvements WHERE produit_id = ? ORDER BY date_heure ASC LIMIT 1",
+                    (p['id'],)
+                ).fetchone()
+                if row_m and row_m['d']:
+                    date_enreg = row_m['d']
+            except Exception:
+                pass
+        if date_enreg:
+            self.e_date_enreg.insert(0, date_enreg)
 
         # Fournisseur
         fid = p.get('fournisseur_id')
@@ -691,6 +923,55 @@ class ProductModal(ctk.CTkToplevel):
         cat = p.get('categorie_piece', 'Pièce de Rechange')
         self.var_categorie.set(cat if cat in ['Pièce de Rechange', "Pièce d'Usure"] else 'Pièce de Rechange')
 
+        # Statut Photo
+        if p.get('id'):
+            has_photo = db.has_photo_piece(p['id'])
+            if has_photo:
+                self.lbl_photo_status.configure(text='✅ Photo enregistrée en base', text_color=COLORS['success'])
+                self.btn_voir_photo.configure(state='normal')
+                self.btn_select_photo.configure(text='🔄 Changer photo')
+            else:
+                self.lbl_photo_status.configure(text='Aucune photo enregistrée', text_color=COLORS['text_muted'])
+                self.btn_voir_photo.configure(state='disabled')
+                self.btn_select_photo.configure(text='📷 Choisir photo')
+
+    def _choisir_photo(self):
+        """Sélectionne un fichier image depuis l'explorateur Windows."""
+        from tkinter import filedialog
+        file_types = [
+            ("Images compatibles", "*.jpg;*.jpeg;*.png;*.bmp;*.webp"),
+            ("Tous les fichiers", "*.*")
+        ]
+        chosen = filedialog.askopenfilename(
+            parent=self,
+            title="Sélectionner une photo de la pièce",
+            filetypes=file_types
+        )
+        if chosen:
+            self._pending_photo_path = chosen
+            from pathlib import Path
+            self.lbl_photo_status.configure(
+                text=f"📁 Sélectionné : {Path(chosen).name} (sera enregistrée)",
+                text_color=COLORS['primary']
+            )
+
+    def _voir_photo_actuelle(self):
+        """Ouvre la visionneuse pour la photo de la pièce existante."""
+        if self.produit and self.produit.get('id'):
+            ouvrir_photo_viewer(self, piece_id=self.produit['id'], on_update=self._refresh_photo_status)
+
+    def _refresh_photo_status(self):
+        if self.produit and self.produit.get('id'):
+            has_photo = db.has_photo_piece(self.produit['id'])
+            if has_photo:
+                self.lbl_photo_status.configure(text='✅ Photo enregistrée en base', text_color=COLORS['success'])
+                self.btn_voir_photo.configure(state='normal')
+                self.btn_select_photo.configure(text='🔄 Changer photo')
+            else:
+                self.lbl_photo_status.configure(text='Aucune photo enregistrée', text_color=COLORS['text_muted'])
+                self.btn_voir_photo.configure(state='disabled')
+                self.btn_select_photo.configure(text='📷 Choisir photo')
+
     def _save(self):
         code = self.e_code.get().strip()
         designation = self.e_design.get().strip()
@@ -701,11 +982,23 @@ class ProductModal(ctk.CTkToplevel):
         if not designation:
             messagebox.showerror('Erreur', 'La Désignation est obligatoire.', parent=self)
             return
+
+        # Quantité — accepte virgule ou point (ex: 2,5 ou 2.5)
+        qte_raw = self.e_qte.get().replace(',', '.').strip() or '0'
+        seuil_raw = self.e_seuil.get().replace(',', '.').strip() or '5'
         try:
-            qte = int(self.e_qte.get() or 0)
-            seuil = int(self.e_seuil.get() or 5)
+            qte = float(qte_raw)
+            if qte.is_integer():
+                qte = int(qte)
         except ValueError:
-            messagebox.showerror('Erreur', 'La quantité et le seuil doivent être des entiers.', parent=self)
+            messagebox.showerror('Erreur', 'La quantité doit être un nombre (ex: 10 ou 2,5).', parent=self)
+            return
+        try:
+            seuil = float(seuil_raw)
+            if seuil.is_integer():
+                seuil = int(seuil)
+        except ValueError:
+            messagebox.showerror('Erreur', "Le seuil d'alerte doit être un nombre.", parent=self)
             return
 
         fourn_nom = self.var_fournisseur.get()
@@ -723,20 +1016,33 @@ class ProductModal(ctk.CTkToplevel):
             'seuil_alerte':           seuil,
             'categorie_piece':        self.var_categorie.get(),
             'fournisseur_id':         fourn_id,
+            'date_enregistrement':    self.e_date_enreg.get().strip(),
             'date_rechange_initiale': self.e_date_init.get().strip(),
             'duree_vie':              self.e_duree_vie.get().strip(),
             'prochaine_date_rechange': self.e_date_proch.get().strip()
         }
 
         try:
+            target_piece_id = None
             if self.mode == 'add':
                 new_id = db.ajouter_produit(data)
+                target_piece_id = new_id
                 added = db.get_produit_by_id(new_id)
                 final_ref = added['code_barres'] if added else code
                 messagebox.showinfo('Succès', f'Produit "{designation}" ajouté !\nRéférence : {final_ref}', parent=self)
             else:
-                db.modifier_produit(self.produit['id'], data)
+                target_piece_id = self.produit['id']
+                db.modifier_produit(target_piece_id, data)
                 messagebox.showinfo('Succès', f'Produit "{designation}" mis à jour !', parent=self)
+
+            # Si une nouvelle photo a été choisie par le magasinier, la traiter et l'enregistrer
+            if self._pending_photo_path and target_piece_id:
+                from services.photo_service import traiter_et_enregistrer_photo
+                ok, res = traiter_et_enregistrer_photo(self._pending_photo_path, target_piece_id)
+                if ok:
+                    db.enregistrer_photo_piece(target_piece_id, res)
+                else:
+                    messagebox.showwarning("Photo non enregistrée", f"Le produit a été enregistré mais pas sa photo :\n{res}", parent=self)
 
             if self.on_save:
                 self.on_save()

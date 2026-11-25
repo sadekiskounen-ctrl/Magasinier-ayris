@@ -18,12 +18,13 @@ MARQUES_CLARCK = ['Hyster', 'Hili', 'Tirsam', 'Linde', 'Hyundai', 'Toyota']
 
 
 class EnginsFrame(ctk.CTkFrame):
-    """Écran Produit d'Engins avec filtrage Camion / Clarck et gestion BDD."""
+    """Écran Produit d'Engins avec filtrage Camion / Clarck, alertes de stock et export Excel."""
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, fg_color=COLORS['bg_dark'], **kwargs)
         self._search_term = ""
         self._type_filter = "Tous"
+        self._filter_stock_alerte = False
         self._build_ui()
         self.refresh()
 
@@ -45,6 +46,15 @@ class EnginsFrame(ctk.CTkFrame):
         )
         self.badge_total.pack(side='left', padx=12, pady=(4, 0))
 
+        self.badge_alerts = ctk.CTkLabel(
+            header, text='',
+            font=FONTS['body_bold'],
+            text_color=COLORS['danger'],
+            fg_color=COLORS['danger_bg'],
+            corner_radius=6
+        )
+        self.badge_alerts.pack(side='left', padx=4, pady=(4, 0))
+
         btn_frame = ctk.CTkFrame(header, fg_color='transparent')
         btn_frame.pack(side='right')
 
@@ -63,24 +73,28 @@ class EnginsFrame(ctk.CTkFrame):
         )
         self.btn_del.pack(side='left', padx=4)
 
+        make_success_button(
+            btn_frame, '📊 Exporter vers Excel', command=self._exporter_excel, width=170
+        ).pack(side='left', padx=4)
+
         SeparatorLine(self).pack(fill='x', padx=24)
 
-        # ── Barre de recherche + Filtre Type Engin ─────────────────────────────
+        # ── Barre de recherche + Filtre Type Engin + Filtre Stock Alerte ──────
         filter_row = ctk.CTkFrame(self, fg_color='transparent')
         filter_row.pack(fill='x', padx=24, pady=12)
 
         SearchBar(
             filter_row,
             placeholder='Rechercher par Référence, Désignation, Marque...',
-            on_change=self._on_search, width=360
-        ).pack(side='left', padx=(0, 16))
+            on_change=self._on_search, width=320
+        ).pack(side='left', padx=(0, 12))
 
         # Switcher Type Engin
         filter_type_frame = ctk.CTkFrame(
             filter_row, fg_color=COLORS['bg_card'],
             corner_radius=8, border_width=1, border_color=COLORS['border']
         )
-        filter_type_frame.pack(side='left')
+        filter_type_frame.pack(side='left', padx=(0, 10))
 
         self.btn_f_tous = ctk.CTkButton(
             filter_type_frame, text='Tous les Engins',
@@ -105,6 +119,25 @@ class EnginsFrame(ctk.CTkFrame):
             font=FONTS['body_bold'], corner_radius=6, height=36, width=110
         )
         self.btn_f_clarck.pack(side='left', padx=2, pady=2)
+
+        # Bouton filtre Stock Alerte
+        self.btn_filter_alerte = ctk.CTkButton(
+            filter_row,
+            text='⚠️ Stock Alerte : Tous ▾',
+            command=self._toggle_stock_alerte_filter,
+            fg_color=COLORS['bg_input'],
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['text_primary'],
+            border_color=COLORS['border'],
+            border_width=1,
+            font=FONTS['body_bold'],
+            corner_radius=8, height=40, width=170
+        )
+        self.btn_filter_alerte.pack(side='left', padx=(0, 8))
+
+        make_secondary_button(
+            filter_row, '✖ Réinitialiser', command=self._reset_filters, width=130
+        ).pack(side='left')
 
         # ── Tableau Produits Engins ──────────────────────────────────────────
         tv_frame = ctk.CTkFrame(
@@ -136,16 +169,57 @@ class EnginsFrame(ctk.CTkFrame):
                 btn.configure(fg_color='transparent', text_color=COLORS['text_secondary'])
         self.refresh()
 
+    def _toggle_stock_alerte_filter(self):
+        """Bascule le filtre Stock Alerte pour les engins."""
+        self._filter_stock_alerte = not self._filter_stock_alerte
+        if self._filter_stock_alerte:
+            self.btn_filter_alerte.configure(
+                text='⚠️ Stock Alerte : Oui',
+                fg_color=COLORS['danger'],
+                text_color=COLORS['text_white'],
+                hover_color=COLORS['danger']
+            )
+        else:
+            self.btn_filter_alerte.configure(
+                text='⚠️ Stock Alerte : Tous ▾',
+                fg_color=COLORS['bg_input'],
+                text_color=COLORS['text_primary'],
+                hover_color=COLORS['bg_hover']
+            )
+        self.refresh()
+
+    def _reset_filters(self):
+        self._type_filter = "Tous"
+        self._filter_stock_alerte = False
+        self._set_type_filter("Tous")
+        self.btn_filter_alerte.configure(
+            text='⚠️ Stock Alerte : Tous ▾',
+            fg_color=COLORS['bg_input'],
+            text_color=COLORS['text_primary'],
+            hover_color=COLORS['bg_hover']
+        )
+        self.refresh()
+
     def _on_search(self, term: str):
         self._search_term = term.strip()
         self.refresh()
+
+    def _get_filtered_produits(self) -> list:
+        produits = db.get_all_produits_engins(search=self._search_term, type_filter=self._type_filter)
+        if self._filter_stock_alerte:
+            produits = [p for p in produits if p.get('quantite_stock', 0) <= p.get('seuil_alerte', 5)]
+        return produits
 
     def refresh(self):
         for item in self.tv.get_children():
             self.tv.delete(item)
 
-        produits = db.get_all_produits_engins(search=self._search_term, type_filter=self._type_filter)
+        produits = self._get_filtered_produits()
+        nb_alerts = sum(1 for p in produits if p['quantite_stock'] <= p['seuil_alerte'])
         self.badge_total.configure(text=f'{len(produits)} référence(s)')
+        self.badge_alerts.configure(
+            text=f'  ⚠️ {nb_alerts} alerte(s) de stock  ' if nb_alerts > 0 else ''
+        )
 
         for i, p in enumerate(produits):
             en_alerte = p['quantite_stock'] <= p['seuil_alerte']
@@ -161,6 +235,54 @@ class EnginsFrame(ctk.CTkFrame):
                 str(p['seuil_alerte'])
             ), tags=(tag,))
         self.tv.autofit_columns()
+
+    def _exporter_excel(self):
+        """Exporte les pièces engins actuellement filtrées vers un fichier Excel (.xlsx)."""
+        from tkinter import filedialog
+        from datetime import datetime
+        import os
+        from services.excel_generator import exporter_engins_excel
+
+        produits = self._get_filtered_produits()
+        if not produits:
+            messagebox.showwarning('Export Excel', 'Aucune pièce engin ne correspond aux filtres actuels.', parent=self)
+            return
+
+        date_str = datetime.now().strftime('%Y%m%d_%H%M')
+        if self._filter_stock_alerte:
+            default_filename = f"Export_Engins_Alerte_Stock_AYRIS_{date_str}.xlsx"
+            dialog_title = "Enregistrer l'export Excel des Produits Engins en Alerte Stock"
+        else:
+            default_filename = f"Export_Produits_Engins_AYRIS_{date_str}.xlsx"
+            dialog_title = "Enregistrer l'export Excel des Produits d'Engins"
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title=dialog_title,
+            initialfile=default_filename,
+            defaultextension=".xlsx",
+            filetypes=[("Fichiers Excel", "*.xlsx")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            exporter_engins_excel(produits, file_path)
+            export_msg = (
+                f'La liste de {len(produits)} produit(s) engin(s) en alerte de stock a été exportée avec succès !'
+                if self._filter_stock_alerte else
+                f'Le catalogue de {len(produits)} produit(s) d\'engin(s) a été exporté avec succès !'
+            )
+            messagebox.showinfo(
+                '✅ Export Réussi',
+                f'{export_msg}\n\nFichier : {file_path}',
+                parent=self
+            )
+            if messagebox.askyesno('Ouvrir Excel', 'Voulez-vous ouvrir le fichier Excel généré ?', parent=self):
+                os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror('Erreur Export', f'Échec de la génération du fichier Excel :\n{e}', parent=self)
 
     def _get_selected_id(self) -> int | None:
         sel = self.tv.selection()

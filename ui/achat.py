@@ -73,24 +73,32 @@ class AchatFrame(ctk.CTkFrame):
         body.grid_rowconfigure(0, weight=1)
 
         # ── Panneau gauche : Formulaire ajout d'article ──────────────────────
-        left = ctk.CTkFrame(
+        left_outer = ctk.CTkFrame(
             body, fg_color=COLORS['bg_card'],
             corner_radius=14, border_width=1,
             border_color=COLORS['border']
         )
-        left.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
+        left_outer.grid(row=0, column=0, sticky='nsew', padx=(0, 10))
 
         ctk.CTkLabel(
-            left, text='➕  Ajouter un Article',
+            left_outer, text='➕  Ajouter un Article',
             font=FONTS['subtitle'],
             text_color=COLORS['primary']
         ).pack(anchor='w', padx=16, pady=(16, 4))
 
-        SeparatorLine(left).pack(fill='x', padx=16, pady=(0, 12))
+        SeparatorLine(left_outer).pack(fill='x', padx=16, pady=(0, 8))
+
+        # Zone défilante pour le formulaire
+        left = ctk.CTkScrollableFrame(
+            left_outer, fg_color='transparent',
+            scrollbar_button_color=COLORS['primary'],
+            scrollbar_button_hover_color=COLORS['primary_dark']
+        )
+        left.pack(fill='both', expand=True, padx=0, pady=(0, 8))
 
         # ─ En-tête du BC ─────────────────────────────────────────────────
         doc_frame = ctk.CTkFrame(left, fg_color=COLORS['bg_hover'], corner_radius=10)
-        doc_frame.pack(fill='x', padx=16, pady=(0, 14))
+        doc_frame.pack(fill='x', padx=16, pady=(4, 14))
 
         self._lbl(doc_frame, '🔢  N° Bon de Commande')
         self.var_num_bc = tk.StringVar()
@@ -109,12 +117,15 @@ class AchatFrame(ctk.CTkFrame):
         self._update_fournisseurs_list()
 
         # ─ Article ───────────────────────────────────────────────────────
-        self._lbl(left, '🏷️  Référence (ou 4 derniers caractères)')
+        self._lbl(left, '🏷️  Référence de la pièce')
+        f_ref = ctk.CTkFrame(left, fg_color='transparent')
+        f_ref.pack(fill='x', padx=16, pady=(0, 10))
+
         self.var_ref = tk.StringVar()
         self.e_ref = ctk.CTkEntry(
-            left,
+            f_ref,
             textvariable=self.var_ref,
-            placeholder_text='Ex: REF-8820 ou 8820',
+            placeholder_text='Ex: REF-8820',
             fg_color=COLORS['bg_input'],
             border_color=COLORS['primary'],
             border_width=2,
@@ -123,13 +134,15 @@ class AchatFrame(ctk.CTkFrame):
             corner_radius=10,
             height=42
         )
-        self.e_ref.pack(fill='x', padx=16, pady=(0, 10))
-        self.var_ref.trace_add('write', self._on_ref_change)
-        self.e_ref.bind('<Return>', self._on_ref_enter)
+        self.e_ref.pack(side='left', fill='x', expand=True, padx=(0, 6))
 
-        self._lbl(left, '📝  Désignation')
+        self._lbl(left, '📝  Désignation de la pièce *')
         self.var_design = tk.StringVar()
-        self.e_design = make_input(left, placeholder='Désignation du produit...', textvariable=self.var_design)
+        self.e_design = make_input(
+            left,
+            placeholder='Désignation libre de la pièce à commander...',
+            textvariable=self.var_design
+        )
         self.e_design.pack(fill='x', padx=16, pady=(0, 10))
 
         self._lbl(left, '🔢  Quantité à Commander')
@@ -235,39 +248,7 @@ class AchatFrame(ctk.CTkFrame):
             text_color=COLORS['text_secondary']
         ).pack(anchor='w', padx=16, pady=(0, 2))
 
-    # ── Logique de recherche référence ─────────────────────────────────────────
-    def _on_ref_change(self, *_):
-        if hasattr(self, '_search_timer') and self._search_timer:
-            try:
-                self.after_cancel(self._search_timer)
-            except Exception:
-                pass
-            self._search_timer = None
-
-        code = self.var_ref.get().strip()
-        if len(code) >= 4:
-            self._search_timer = self.after(250, lambda: self._do_debounced_lookup(code))
-
-    def _do_debounced_lookup(self, code: str):
-        self._search_timer = None
-        self._lookup(code)
-
-    def _on_ref_enter(self, event):
-        if hasattr(self, '_search_timer') and self._search_timer:
-            try:
-                self.after_cancel(self._search_timer)
-            except Exception:
-                pass
-            self._search_timer = None
-        self._lookup(self.var_ref.get().strip())
-
-    def _lookup(self, code: str):
-        produit = db.find_produit_by_ref_or_last4(code)
-        if produit:
-            if self.var_ref.get().strip() != produit['code_barres']:
-                self.var_ref.set(produit['code_barres'])
-            self.var_design.set(produit['designation'])
-            self.var_unite.set(produit.get('unite', 'Unité'))
+    # ── Bon de Commande autonome (aucune liaison avec le stock) ────────────────
 
     # ── Actions ────────────────────────────────────────────────────────────────
     def _editer_ligne(self):
@@ -311,6 +292,17 @@ class AchatFrame(ctk.CTkFrame):
         except ValueError:
             messagebox.showerror('Erreur', 'Quantité invalide (entier > 0 requis).', parent=self)
             return
+
+        # Vérifier si l'article est déjà présent dans la commande (éviter les doublons involontaires)
+        for i, a in enumerate(self._articles):
+            if i != self._editing_index and a.get('reference', '').strip().upper() == ref.upper():
+                messagebox.showwarning(
+                    'Article déjà présent',
+                    f"L'article avec la référence '{ref}' est déjà dans la commande (ligne {i+1}).\n"
+                    f"Modifiez directement la ligne existante ou ajustez sa quantité.",
+                    parent=self
+                )
+                return
 
         item = {
             'reference': ref,
@@ -405,6 +397,7 @@ class AchatFrame(ctk.CTkFrame):
             return
 
         pdf_dir = get_config('pdf_directory', '')
+        chemin_pdf = ''
         try:
             chemin_pdf = generer_bon_commande_pdf(
                 num_bc=num_bc,
@@ -415,6 +408,17 @@ class AchatFrame(ctk.CTkFrame):
             )
         except Exception as e:
             messagebox.showerror('Erreur PDF', f'Erreur lors de la génération :\n{e}', parent=self)
+            return
+
+        try:
+            db.enregistrer_bon_commande(
+                num_bc=num_bc,
+                fournisseur=fournisseur,
+                articles=self._articles,
+                chemin_pdf=chemin_pdf
+            )
+        except Exception as e:
+            messagebox.showerror('Erreur Base de Données', f'Erreur lors de l\'enregistrement de la commande :\n{e}', parent=self)
             return
 
         msg = f'✅ Bon de Commande {num_bc} généré avec succès ! ({len(self._articles)} article(s))'

@@ -7,10 +7,14 @@ Module: ui/outillage.py
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import messagebox
+from datetime import datetime
 from ui.theme import COLORS, FONTS
 from ui.widgets import (StyledTreeview, add_scrollbar, make_primary_button,
                          make_danger_button, make_secondary_button, make_success_button,
-                         make_input, SearchBar, SeparatorLine)
+                         make_input, SearchBar, SeparatorLine, DatePickerInput,
+                         AutocompleteOutillageInput)
+from ui.pdf_viewer import ouvrir_pdf_viewer
+from services.pdf_generator import generer_bon_decharge_pdf
 import database.db_manager as db
 
 
@@ -46,20 +50,27 @@ class OutillageFrame(ctk.CTkFrame):
         btn_frame.pack(side='right')
 
         make_danger_button(
-            btn_frame, '📤 Sortie Outil', command=self._open_sortie_modal, width=140
+            btn_frame, '📤 Sortie Outil', command=self._open_sortie_modal, width=130
         ).pack(side='left', padx=3)
 
         make_success_button(
-            btn_frame, '📥 Retour Outil', command=self._open_retour_modal, width=140
+            btn_frame, '📥 Retour Outil', command=self._open_retour_modal, width=130
+        ).pack(side='left', padx=3)
+
+        ctk.CTkButton(
+            btn_frame, text='📑 Décharge', command=self._open_decharge_modal,
+            fg_color=COLORS['primary'], hover_color=COLORS['primary_dark'],
+            text_color='white', font=FONTS['body_bold'], corner_radius=8,
+            height=42, width=130
         ).pack(side='left', padx=3)
 
         make_secondary_button(
-            btn_frame, '📋 Historique Prêts', command=self._open_historique_modal, width=155
+            btn_frame, '📋 Historique Prêts', command=self._open_historique_modal, width=145
         ).pack(side='left', padx=3)
 
         make_primary_button(
             btn_frame, 'Nouvel Outillage', command=self._open_add_modal,
-            icon='＋', width=160
+            icon='＋', width=150
         ).pack(side='left', padx=3)
 
         SeparatorLine(self).pack(fill='x', padx=24)
@@ -177,6 +188,7 @@ class OutillageFrame(ctk.CTkFrame):
 
         # Context Menu (Clic droit sur tableau)
         self.context_menu = tk.Menu(self, tearoff=0, bg=COLORS['bg_card'], fg=COLORS['text_primary'], activebackground=COLORS['primary'], activeforeground='white')
+        self.context_menu.add_command(label="📑  Décharge d'outillage", command=self._open_decharge_from_selection)
         self.context_menu.add_command(label="📤  Sortie d'outillage", command=self._open_sortie_modal)
         self.context_menu.add_command(label="📥  Retour d'outillage (Restitution)", command=self._open_retour_modal)
         self.context_menu.add_separator()
@@ -293,6 +305,27 @@ class OutillageFrame(ctk.CTkFrame):
             )
             return
         SortieOutillageModal(self, tool=tool, on_save=self.refresh)
+
+    def _open_decharge_from_selection(self):
+        sel = self.tv.selection()
+        tool = None
+        if sel:
+            try:
+                tool = db.get_outillage_by_id(int(sel[0]))
+            except Exception:
+                tool = None
+        self._open_decharge_modal(tool=tool)
+
+    def _open_decharge_modal(self, tool: dict = None):
+        """Ouvre la fenêtre de formulaire de Décharge d'outillage."""
+        if tool is None:
+            sel = self.tv.selection()
+            if sel:
+                try:
+                    tool = db.get_outillage_by_id(int(sel[0]))
+                except Exception:
+                    tool = None
+        DechargeOutillageModal(self, tool=tool, on_save=self.refresh)
 
     def _open_retour_modal(self):
         sel = self.tv.selection()
@@ -885,4 +918,226 @@ class HistoriqueSortiesOutillageModal(ctk.CTkToplevel):
                 dr
             ), tags=(tag,))
         self.tv.autofit_columns()
+
+
+# ─────────────────────── Modale Décharge Outillage ──────────────────────────────────
+
+class DechargeOutillageModal(ctk.CTkToplevel):
+    """
+    Fenêtre modale d'enregistrement de Décharge d'Outillage et impression du bon officiel.
+    Comprend 3 champs obligatoires :
+      1. Nom du demandeur
+      2. Nom de l'outillage (avec auto-complétion intelligente en temps réel)
+      3. Date (pré-remplie à aujourd'hui, modifiable avec sélecteur de date)
+    Layout adaptatif et fluide, proportionnel à toute résolution et mise à l'échelle Windows.
+    """
+
+    def __init__(self, parent, tool: dict = None, on_save=None):
+        super().__init__(parent)
+        self.parent_frame = parent
+        self.tool = tool
+        self.on_save = on_save
+
+        self.title("📑 Bon de Décharge d'Outillage")
+        self.minsize(520, 440)
+        self.configure(fg_color=COLORS['bg_dark'])
+        self.resizable(True, True)
+
+        # Centrage dynamique sur l'écran
+        self.update_idletasks()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w, h = 620, 520
+        x = max(10, (sw - w) // 2)
+        y = max(10, (sh - h) // 2 - 40)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        self.grab_set()
+        self.focus()
+
+        self._build_ui()
+        if self.tool:
+            self._fill_from_tool()
+
+    def _build_ui(self):
+        # ── En-tête ──────────────────────────────────────────────────────────
+        header = ctk.CTkFrame(self, fg_color='transparent')
+        header.pack(fill='x', padx=24, pady=(18, 6))
+
+        ctk.CTkLabel(
+            header, text="📑  Bon de Décharge d'Outillage",
+            font=FONTS['title_large'], text_color=COLORS['text_primary'], anchor='w'
+        ).pack(fill='x')
+
+        ctk.CTkLabel(
+            header,
+            text="Enregistrez la sortie de l'outillage et visualisez/imprimez le bon de décharge officiel.",
+            font=FONTS['body'], text_color=COLORS['text_secondary'], anchor='w'
+        ).pack(fill='x', pady=(2, 0))
+
+        SeparatorLine(self).pack(fill='x', padx=24, pady=(6, 12))
+
+        # ── Carte Formulaire (Layout adaptatif avec grid pondéré) ─────────────
+        card = ctk.CTkFrame(
+            self, fg_color=COLORS['bg_card'],
+            corner_radius=12, border_width=1, border_color=COLORS['border']
+        )
+        card.pack(fill='both', expand=True, padx=24, pady=(0, 14))
+
+        card.grid_columnconfigure(0, weight=0, minsize=170)
+        card.grid_columnconfigure(1, weight=1)
+
+        # 1. Nom du Demandeur *
+        lbl_dem = ctk.CTkLabel(
+            card, text='Nom du Demandeur *',
+            font=FONTS['body_bold'], text_color=COLORS['text_secondary'], anchor='w'
+        )
+        lbl_dem.grid(row=0, column=0, sticky='w', padx=(20, 10), pady=(18, 10))
+
+        self.e_demandeur = make_input(
+            card, placeholder="Ex: Jean Dupont, Technicien Maintenance...", width=300
+        )
+        self.e_demandeur.grid(row=0, column=1, sticky='ew', padx=(0, 20), pady=(18, 10))
+
+        # 2. Nom de l'Outillage * (avec auto-complétion dynamique)
+        lbl_outil = ctk.CTkLabel(
+            card, text="Nom de l'Outillage *",
+            font=FONTS['body_bold'], text_color=COLORS['text_secondary'], anchor='w'
+        )
+        lbl_outil.grid(row=1, column=0, sticky='w', padx=(20, 10), pady=10)
+
+        self.e_outillage = AutocompleteOutillageInput(
+            card, placeholder="Tapez les premières lettres de l'outil...", width=300
+        )
+        self.e_outillage.grid(row=1, column=1, sticky='ew', padx=(0, 20), pady=10)
+
+        # 3. Date de Décharge * (avec sélecteur de calendrier)
+        lbl_date = ctk.CTkLabel(
+            card, text='Date de Décharge *',
+            font=FONTS['body_bold'], text_color=COLORS['text_secondary'], anchor='w'
+        )
+        lbl_date.grid(row=2, column=0, sticky='w', padx=(20, 10), pady=10)
+
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        self.e_date = DatePickerInput(card, initial_date=today_str, width=220)
+        self.e_date.grid(row=2, column=1, sticky='w', padx=(0, 20), pady=10)
+
+        # Note d'aide ergonomique
+        info_frame = ctk.CTkFrame(card, fg_color=COLORS['bg_hover'], corner_radius=8)
+        info_frame.grid(row=3, column=0, columnspan=2, sticky='ew', padx=20, pady=(14, 18))
+
+        ctk.CTkLabel(
+            info_frame,
+            text="💡  L'auto-complétion filtre en temps réel les outillages existants dès la première lettre tapée.\n"
+                 "    Naviguez avec ↑ / ↓ et validez avec Entrée, ou cliquez sur l'outil suggéré.",
+            font=FONTS['small'], text_color=COLORS['text_secondary'], justify='left', anchor='w'
+        ).pack(fill='x', padx=12, pady=8)
+
+        # Navigation clavier rapide
+        self.e_demandeur.bind('<Return>', lambda e: self.e_outillage.entry.focus())
+
+        # ── Barre d'actions inférieure ────────────────────────────────────────
+        SeparatorLine(self).pack(fill='x', padx=24)
+
+        btn_bar = ctk.CTkFrame(self, fg_color='transparent')
+        btn_bar.pack(fill='x', padx=24, pady=14)
+
+        make_secondary_button(
+            btn_bar, 'Annuler', command=self.destroy, width=120
+        ).pack(side='left')
+
+        self.btn_submit = ctk.CTkButton(
+            btn_bar,
+            text='🖨️  Valider et imprimer',
+            command=self._valider_et_imprimer,
+            fg_color=COLORS['primary'],
+            hover_color=COLORS['primary_dark'],
+            text_color='white',
+            font=FONTS['body_bold'],
+            corner_radius=8,
+            height=42,
+            width=210
+        )
+        self.btn_submit.pack(side='right')
+
+        # Clic dans le vide de la fenêtre pour fermer la liste d'autocomplétion
+        self.bind('<Button-1>', self._on_window_click)
+
+    def _on_window_click(self, event):
+        try:
+            if hasattr(self, 'e_outillage'):
+                widget = event.widget
+                if widget != self.e_outillage.entry and widget != getattr(self.e_outillage, '_listbox', None):
+                    self.e_outillage._hide_popup()
+        except Exception:
+            pass
+
+    def _fill_from_tool(self):
+        """Pré-remplit l'outillage si un outil a été sélectionné avant d'ouvrir la fenêtre."""
+        if self.tool:
+            self.e_outillage.set_selected_tool(self.tool)
+
+    def _valider_et_imprimer(self):
+        demandeur = self.e_demandeur.get().strip()
+        outillage = self.e_outillage.get().strip()
+        date_str = self.e_date.get().strip()
+
+        # Validation stricte des 3 champs obligatoires
+        if not demandeur:
+            messagebox.showerror('Champ obligatoire', 'Veuillez saisir le nom du demandeur.', parent=self)
+            self.e_demandeur.focus()
+            return
+
+        if not outillage:
+            messagebox.showerror('Champ obligatoire', "Veuillez renseigner le nom de l'outillage.", parent=self)
+            self.e_outillage.entry.focus()
+            return
+
+        if not date_str:
+            messagebox.showerror('Champ obligatoire', 'Veuillez sélectionner ou renseigner une date valide.', parent=self)
+            return
+
+        # Récupération des métadonnées de l'outillage si existant en base
+        tool_info = self.e_outillage.get_selected_tool()
+        if not tool_info:
+            tool_info = db.get_outillage_by_designation(outillage)
+
+        try:
+            # 1. Génération du numéro de bon de décharge séquentiel officiel
+            num_bon = db.get_next_numero_decharge()
+
+            # 2. Génération du fichier PDF corporate officiel
+            pdf_path = generer_bon_decharge_pdf(
+                num_bon=num_bon,
+                demandeur=demandeur,
+                outillage=outillage,
+                date_str=date_str,
+                tool_info=tool_info
+            )
+
+            # 3. Enregistrement dans la table dédiée 'decharges_outillage'
+            db.enregistrer_decharge_outillage(
+                demandeur=demandeur,
+                outillage=outillage,
+                date_str=date_str,
+                numero_bon=num_bon,
+                chemin_pdf=pdf_path
+            )
+
+            # 4. Rafraîchissement éventuel et fermeture de la modale
+            if self.on_save:
+                try:
+                    self.on_save()
+                except Exception:
+                    pass
+
+            parent_ref = self.parent_frame
+            self.destroy()
+
+            # 5. Ouverture instantanée de la visionneuse PDF intégrée (avec option Imprimer)
+            ouvrir_pdf_viewer(parent_ref, pdf_path, title=f"Bon de Décharge {num_bon}")
+
+        except Exception as e:
+            messagebox.showerror('Erreur', f"Une erreur est survenue lors de l'enregistrement de la décharge :\n{e}", parent=self)
+
 

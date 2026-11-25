@@ -8,7 +8,7 @@ import customtkinter as ctk
 import tkinter as tk
 from ui.theme import COLORS, FONTS
 from ui.widgets import (make_stat_card, make_section_header, StyledTreeview,
-                         add_scrollbar, SeparatorLine, BadgeLabel)
+                         add_scrollbar, SeparatorLine, BadgeLabel, make_success_button)
 import database.db_manager as db
 
 
@@ -89,6 +89,10 @@ class DashboardFrame(ctk.CTkFrame):
         ).pack(side='left')
         self.badge_alerts = BadgeLabel(alert_header, '0', color=COLORS['danger'])
         self.badge_alerts.pack(side='left', padx=8)
+
+        make_success_button(
+            alert_header, '📊 Exporter Excel', command=self._exporter_alertes_excel, width=140
+        ).pack(side='right')
 
         tv_frame_alert = ctk.CTkFrame(alert_panel, fg_color='transparent', height=260)
         tv_frame_alert.pack(fill='both', expand=True, padx=8, pady=(0, 8))
@@ -608,3 +612,41 @@ class DashboardFrame(ctk.CTkFrame):
                 self.selected_month = available_months[0]
                 self.var_month.set(month_labels[0])
             self._update_graph()
+
+    def _exporter_alertes_excel(self):
+        """Exporte l'ensemble des produits en alerte de stock vers un fichier Excel (.xlsx)."""
+        from tkinter import filedialog, messagebox
+        from datetime import datetime
+        import os
+        from services.excel_generator import exporter_alertes_excel
+
+        alertes = db.get_produits_en_alerte()
+        if not alertes:
+            messagebox.showinfo('Export Excel', 'Aucun produit n\'est actuellement sous le seuil d\'alerte.', parent=self)
+            return
+
+        date_str = datetime.now().strftime('%Y%m%d_%H%M')
+        default_filename = f"Export_Alertes_Stock_AYRIS_{date_str}.xlsx"
+
+        file_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Enregistrer l'export Excel des Alertes de Stock",
+            initialfile=default_filename,
+            defaultextension=".xlsx",
+            filetypes=[("Fichiers Excel", "*.xlsx")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            exporter_alertes_excel(alertes, file_path)
+            messagebox.showinfo(
+                '✅ Export Réussi',
+                f'La liste des {len(alertes)} produit(s) en alerte de stock a été exportée avec succès !\n\nFichier : {file_path}',
+                parent=self
+            )
+            if messagebox.askyesno('Ouvrir Excel', 'Voulez-vous ouvrir le fichier Excel généré ?', parent=self):
+                os.startfile(file_path)
+        except Exception as e:
+            messagebox.showerror('Erreur Export', f'Échec de la génération du fichier Excel :\n{e}', parent=self)

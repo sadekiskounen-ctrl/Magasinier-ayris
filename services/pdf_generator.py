@@ -41,9 +41,15 @@ def get_default_pdf_dir() -> str:
             return pdf_dir
     except Exception:
         pass
-    docs = Path.home() / 'Documents' / 'SARL_Ayris_PDF'
-    docs.mkdir(parents=True, exist_ok=True)
-    return str(docs)
+    try:
+        docs = Path.home() / 'Documents' / 'SARL_Ayris_PDF'
+        docs.mkdir(parents=True, exist_ok=True)
+        return str(docs)
+    except Exception:
+        import tempfile
+        fallback = Path(tempfile.gettempdir()) / 'SARL_Ayris_PDF'
+        fallback.mkdir(parents=True, exist_ok=True)
+        return str(fallback)
 
 
 def _get_header_logo() -> Image | None:
@@ -117,6 +123,9 @@ def _build_corporate_header(doc_type: str, num_doc: str, date_str: str,
         col3_val = f'<b>{beneficiaire or "Non spécifié"}</b>'
         if demandeur:
             col3_val += f'<br/><b>Demandeur : {demandeur}</b>'
+    elif 'DÉCHARGE' in doc_type or 'DECHARGE' in doc_type:
+        col3_label = 'Nom du Demandeur'
+        col3_val = f'<b>{demandeur or beneficiaire or "Non spécifié"}</b>'
     elif 'RETOUR' in doc_type:
         col3_label = 'Service & Retourné par'
         col3_val = f'<b>{beneficiaire or "Non spécifié"}</b>'
@@ -226,7 +235,7 @@ def _build_corporate_table(articles: list, type_mvt: str) -> list:
     return elements
 
 
-def _build_signatures_block(motif: str, type_mvt: str, demandeur: str = "", retourne_par: str = "") -> list:
+def _build_signatures_block(motif: str, type_mvt: str, demandeur: str = "", retourne_par: str = "", magasinier: str = "") -> list:
     """Bloc de signatures ajusté selon la demande (Magasinier / Livreur / Demandeur / Agent Remettant)."""
     elements = []
     elements.append(Spacer(1, 0.4*cm))
@@ -247,22 +256,27 @@ def _build_signatures_block(motif: str, type_mvt: str, demandeur: str = "", reto
     sig_label = ParagraphStyle('sigl', fontName='Helvetica-Bold', fontSize=9, textColor=COLOR_WHITE, alignment=TA_CENTER)
 
     if type_mvt == 'SORTIE':
-        left_title = "Le Magasinier"
+        left_title = f"Le Magasinier : {magasinier}" if magasinier else "Le Magasinier"
         right_title = f"Le Demandeur : {demandeur}" if demandeur else "Le Service Récipiendaire / Demandeur"
+    elif type_mvt in ('DECHARGE', 'DÉCHARGE'):
+        left_title = f"Le Magasinier : {magasinier}" if magasinier else "Le Magasinier"
+        right_title = f"Le Demandeur : {demandeur}" if demandeur else "Le Demandeur"
     elif type_mvt == 'ENTREE':
-        left_title = "Le Magasinier (Réception)"
+        left_title = f"Le Magasinier (Réception) : {magasinier}" if magasinier else "Le Magasinier (Réception)"
         right_title = "Le Livreur / Fournisseur"
     elif type_mvt == 'COMMANDE':
-        left_title = "Le Magasinier"
+        left_title = f"Le Magasinier : {magasinier}" if magasinier else "Le Magasinier"
         right_title = "Le Fournisseur / Destinataire"
     else:
-        left_title = "Le Magasinier"
+        left_title = f"Le Magasinier : {magasinier}" if magasinier else "Le Magasinier"
         right_title = f"Retourné par : {retourne_par}" if retourne_par else "L'Agent Remettant (Retour)"
+
+    mag_sig_content = f'<font size="9"><b>{magasinier}</b></font><br/><br/><br/><b>Signature & Cachet Officiel</b>' if magasinier else '\n\n\n\n<b>Signature & Cachet Officiel</b>'
 
     sig_data = [
         [Paragraph(left_title, sig_label), Paragraph(right_title, sig_label)],
         [
-            Paragraph('\n\n\n\n<b>Signature & Cachet Officiel</b>',
+            Paragraph(mag_sig_content,
                       ParagraphStyle('s1', fontName='Helvetica-Bold', fontSize=8, alignment=TA_CENTER, textColor=COLOR_TEXT_DARK)),
             Paragraph('\n\n\n\n<b>Signature & Cachet Officiel</b>',
                       ParagraphStyle('s2', fontName='Helvetica-Bold', fontSize=8, alignment=TA_CENTER, textColor=COLOR_TEXT_DARK)),
@@ -315,7 +329,8 @@ def generer_bon_pdf(
     articles: list = None,
     pdf_dir: str = None,
     demandeur: str = "",
-    retourne_par: str = ""
+    retourne_par: str = "",
+    magasinier: str = ""
 ) -> str:
     """Génère un PDF officiel avec footer ancré en bas de page A4."""
     if articles is None:
@@ -348,7 +363,7 @@ def generer_bon_pdf(
     story = []
     story.extend(_build_corporate_header(doc_type_label, num_doc, date_str, beneficiaire, fournisseur, demandeur, retourne_par))
     story.extend(_build_corporate_table(articles, type_mvt))
-    story.extend(_build_signatures_block(motif, type_mvt, demandeur, retourne_par))
+    story.extend(_build_signatures_block(motif, type_mvt, demandeur, retourne_par, magasinier=magasinier))
 
     doc.build(
         story,
@@ -401,3 +416,129 @@ def generer_bon_commande_pdf(
     )
     print(f"[PDF] Bon de commande corporate généré : {filepath}")
     return filepath
+
+
+# ─────────────────── TABLEAU BON DE DÉCHARGE ─────────────────────────────────
+
+def _build_decharge_table(outillage: str, tool_info: dict = None) -> list:
+    """Tableau de données officiel pour Bon de Décharge d'Outillage (style SAP / Oracle ERP)."""
+    elements = []
+
+    col_header_style = ParagraphStyle(
+        'ch_dec', fontName='Helvetica-Bold', fontSize=9,
+        textColor=COLOR_WHITE, alignment=TA_CENTER
+    )
+    headers = [
+        Paragraph('N°', col_header_style),
+        Paragraph("N° Outillage", col_header_style),
+        Paragraph("Désignation de l'Outillage Sorti", col_header_style),
+        Paragraph('Marque', col_header_style),
+        Paragraph('Qté', col_header_style),
+        Paragraph('Unité', col_header_style),
+    ]
+
+    cell_style  = ParagraphStyle('cell_dec',  fontName='Helvetica', fontSize=9, textColor=COLOR_TEXT_DARK)
+    cell_center = ParagraphStyle('cellc_dec', fontName='Helvetica', fontSize=9, textColor=COLOR_TEXT_DARK, alignment=TA_CENTER)
+    cell_bold   = ParagraphStyle('cellb_dec', fontName='Helvetica-Bold', fontSize=10, textColor=COLOR_ROYAL, alignment=TA_CENTER)
+
+    num_outillage = tool_info.get('numero_outillage', '—') if tool_info else '—'
+    marque = tool_info.get('marque', '—') if tool_info else '—'
+
+    data = [
+        headers,
+        [
+            Paragraph('1', cell_center),
+            Paragraph(str(num_outillage or '—'), cell_center),
+            Paragraph(str(outillage), cell_style),
+            Paragraph(str(marque or '—'), cell_center),
+            Paragraph('1', cell_bold),
+            Paragraph('Unité', cell_center),
+        ],
+        [
+            Paragraph('', cell_style),
+            Paragraph('', cell_style),
+            Paragraph('<b>TOTAL OUTILLAGES SORTIS</b>', ParagraphStyle('tot_dec', fontName='Helvetica-Bold', fontSize=9, textColor=COLOR_TEXT_DARK, alignment=TA_RIGHT)),
+            Paragraph('', cell_style),
+            Paragraph('<b>1</b>', ParagraphStyle('totv_dec', fontName='Helvetica-Bold', fontSize=11, textColor=COLOR_ROYAL, alignment=TA_CENTER)),
+            Paragraph('', cell_style),
+        ]
+    ]
+
+    table = Table(data, colWidths=[1.2*cm, 3.3*cm, 7.5*cm, 3.0*cm, 1.5*cm, 1.5*cm])
+    ts = [
+        ('BACKGROUND',    (0, 0), (-1, 0),  COLOR_NAVY),
+        ('TEXTCOLOR',     (0, 0), (-1, 0),  COLOR_WHITE),
+        ('ALIGN',         (0, 0), (-1, 0),  'CENTER'),
+        ('TOPPADDING',    (0, 0), (-1, 0),  8),
+        ('BOTTOMPADDING', (0, 0), (-1, 0),  8),
+        ('GRID',          (0, 0), (-1, -1), 0.5, COLOR_BORDER),
+        ('VALIGN',        (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING',   (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING',  (0, 0), (-1, -1), 6),
+        ('TOPPADDING',    (0, 1), (-1, 1),  9),
+        ('BOTTOMPADDING', (0, 1), (-1, 1),  9),
+        ('BACKGROUND',    (0, -1), (-1, -1), COLOR_LIGHT_BG),
+        ('LINEABOVE',     (0, -1), (-1, -1), 1.5, COLOR_ROYAL),
+    ]
+    table.setStyle(TableStyle(ts))
+    elements.append(table)
+    return elements
+
+
+# ─────────────────── GÉNÉRATEUR BON DE DÉCHARGE ──────────────────────────────
+
+def generer_bon_decharge_pdf(
+    num_bon: str,
+    demandeur: str,
+    outillage: str,
+    date_str: str,
+    tool_info: dict = None,
+    pdf_dir: str = None
+) -> str:
+    """
+    Génère un Bon de Décharge (BD) PDF officiel selon le gabarit officiel AYRIS.
+    Réutilise le même en-tête, logo, cartouche, tableau, signatures et footer ancré en bas de page A4.
+    """
+    if pdf_dir is None:
+        pdf_dir = get_default_pdf_dir()
+
+    Path(pdf_dir).mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    clean_num = num_bon[3:] if num_bon.startswith('BD-') else num_bon
+    filename = f"BD_{clean_num.replace('-', '_')}_{timestamp}.pdf"
+    filepath = os.path.join(pdf_dir, filename)
+
+    # Mise en forme lisible de la date
+    try:
+        if '-' in date_str:
+            parts = date_str.split('-')
+            if len(parts) == 3:
+                date_display = f"{parts[2]}/{parts[1]}/{parts[0]}"
+            else:
+                date_display = date_str
+        else:
+            date_display = date_str
+    except Exception:
+        date_display = date_str
+
+    doc = SimpleDocTemplate(
+        filepath, pagesize=A4,
+        rightMargin=1.5*cm, leftMargin=1.5*cm,
+        topMargin=1.2*cm, bottomMargin=2.2*cm,
+        title=f"SARL NOMADE AYRIS — BON DE DÉCHARGE {num_bon}",
+        author="SARL NOMADE AYRIS Enterprise System",
+    )
+
+    story = []
+    story.extend(_build_corporate_header("BON DE DÉCHARGE", num_bon, date_display, beneficiaire=demandeur, demandeur=demandeur))
+    story.extend(_build_decharge_table(outillage, tool_info))
+    story.extend(_build_signatures_block(motif="", type_mvt="DECHARGE", demandeur=demandeur))
+
+    doc.build(
+        story,
+        onFirstPage=lambda c, d: _draw_footer(c, d, num_bon),
+        onLaterPages=lambda c, d: _draw_footer(c, d, num_bon)
+    )
+    print(f"[PDF] Bon de décharge corporate généré : {filepath}")
+    return filepath
+

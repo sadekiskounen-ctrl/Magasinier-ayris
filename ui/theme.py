@@ -66,7 +66,6 @@ SIDEBAR_ITEMS = [
     {'key': 'dashboard',   'icon': '📊', 'label': 'Tableau de Bord'},
     {'key': 'fournisseurs','icon': '🏭', 'label': 'Fournisseurs'},
     {'key': 'catalogue',   'icon': '📦', 'label': 'Produit Pièce de Rechange'},
-    {'key': 'engins',      'icon': '🚜', 'label': "Produit d'Engins"},
     {'key': 'outillage',   'icon': '🔧', 'label': 'Outillage'},
     {'key': 'saisie',      'icon': '🔄', 'label': 'Mouvements & Bons'},
     {'key': 'achat',       'icon': '🛒', 'label': 'Bon de Commande'},
@@ -76,7 +75,7 @@ SIDEBAR_ITEMS = [
 ]
 
 # Lignes de production & utilités
-LIGNES = ['KHS1', 'KHS2', 'UROLA', 'ADUE', 'Convoyeur', 'Compresseur', 'Aucune (Matériel Général)']
+LIGNES = ['KHS1', 'KHS2', 'UROLA', 'ADUE', 'Convoyeur', 'Compresseur', 'Groupe Électrogène', 'Aucune (Matériel Général)']
 
 # Option de sous-lignes pour Convoyeur et Compresseur
 SOUS_LIGNES_CONVOYEUR = ['KHS1', 'KHS2', 'UROLA']
@@ -90,6 +89,7 @@ MACHINES_SPECIFIQUES = {
     'ADUE':  ['N/A'],
     'Convoyeur': ['N/A'],
     'Compresseur': ['N/A'],
+    'Groupe Électrogène': ['N/A'],
     'Aucune (Matériel Général)': ['N/A'],
 }
 
@@ -97,6 +97,8 @@ MACHINES_SPECIFIQUES = {
 def get_machines_pour_lignes(lignes_selectionnees: list) -> list:
     """Retourne la liste dédoublonnée des machines selon les lignes sélectionnées."""
     if not lignes_selectionnees or ('Aucune (Matériel Général)' in lignes_selectionnees and len(lignes_selectionnees) == 1):
+        return ['N/A']
+    if 'Groupe Électrogène' in lignes_selectionnees and len(lignes_selectionnees) == 1:
         return ['N/A']
     machines = []
     for ligne in lignes_selectionnees:
@@ -111,5 +113,9 @@ UNITES = ['Unité', 'Pièce', 'kg', 'L', 'm', 'Boîte', 'Rouleau', 'Carton', 'Pa
 
 SERVICES = [
     'Production', 'Maintenance', 'Qualité', 'Direction', 'Logistique',
-    'Commercial', 'Administratif', 'Fournisseur Externe', 'Autre'
+    'Commercial', 'Administratif', 'Atelier Soudeur', 'Service Palette',
+    'Sécurité', 'Fournisseur Externe', 'Autre'
 ]
+
+# Magasiniers officiels AYRIS
+MAGASINIERS = ['AIT SELLAMET Fouad', 'IKARIOUANE Ahcene']

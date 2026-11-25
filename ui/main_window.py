@@ -102,22 +102,32 @@ class MainWindow(ctk.CTk):
         )
         self.sidebar.grid(row=0, column=0, sticky='nsew')
         self.sidebar.grid_propagate(False)
+        self.sidebar.grid_rowconfigure(1, weight=1)
+        self.sidebar.grid_columnconfigure(0, weight=1)
 
         # ─ Logo AYRIS officiel sans déformation dans la sidebar ───────────────
         logo_frame = ctk.CTkFrame(self.sidebar, fg_color='transparent')
-        logo_frame.pack(fill='x', padx=0, pady=0)
+        logo_frame.grid(row=0, column=0, sticky='ew')
 
         logo_inner = ctk.CTkFrame(logo_frame, fg_color='transparent')
-        logo_inner.pack(fill='x', pady=(16, 6))
+        logo_inner.pack(fill='x', pady=(10, 4))
+
+        # Adapter la taille du logo selon la hauteur de l'écran
+        sh = self.winfo_screenheight()
+        if sh <= 768:
+            logo_size = (140, 109)
+        elif sh <= 900:
+            logo_size = (160, 125)
+        else:
+            logo_size = (192, 150)
 
         if os.path.exists(LOGO_PATH):
             try:
                 pil_img = Image.open(LOGO_PATH).convert('RGBA')
-                # Ratio d'origine 1024 x 801 (1.278) -> Taille 192 x 150 sans déformation !
                 logo_img = ctk.CTkImage(
                     light_image=pil_img,
                     dark_image=pil_img,
-                    size=(192, 150)
+                    size=logo_size
                 )
                 lbl_logo = ctk.CTkLabel(logo_inner, image=logo_img, text='')
                 lbl_logo.pack(pady=4, padx=10)
@@ -132,23 +142,29 @@ class MainWindow(ctk.CTk):
             fg_color='#1D5197',
             height=1,
             corner_radius=0
-        ).pack(fill='x', padx=20, pady=(4, 8))
+        ).grid(row=0, column=0, sticky='ews', padx=20)
 
-        # ─ Navigation items ───────────────────────────────────────────────
-        nav_frame = ctk.CTkFrame(self.sidebar, fg_color='transparent')
-        nav_frame.pack(fill='x', pady=(4, 0), padx=10)
+        # ─ Navigation items dans un CTkScrollableFrame (scrollable) ───────────
+        nav_scroll = ctk.CTkScrollableFrame(
+            self.sidebar,
+            fg_color='transparent',
+            scrollbar_button_color='#1D5197',
+            scrollbar_button_hover_color='#2563EB',
+        )
+        nav_scroll.grid(row=1, column=0, sticky='nsew', padx=2, pady=(4, 0))
+        nav_scroll.grid_columnconfigure(0, weight=1)
 
         for item in SIDEBAR_ITEMS:
-            btn = self._make_nav_button(nav_frame, item)
-            btn.pack(fill='x', pady=3)
+            btn = self._make_nav_button(nav_scroll, item)
+            btn.pack(fill='x', pady=3, padx=8)
             self._nav_buttons[item['key']] = btn
 
         # ─ Bas de sidebar ─────────────────────────────────────────────────
         ctk.CTkFrame(self.sidebar, fg_color='#1D5197',
-                     height=1, corner_radius=0).pack(side='bottom', fill='x')
+                     height=1, corner_radius=0).grid(row=2, column=0, sticky='ew')
 
         bottom = ctk.CTkFrame(self.sidebar, fg_color='transparent')
-        bottom.pack(side='bottom', fill='x', padx=10, pady=10)
+        bottom.grid(row=3, column=0, sticky='ew', padx=10, pady=8)
 
         ctk.CTkLabel(
             bottom, text='v3.5 Enterprise — AYRIS',

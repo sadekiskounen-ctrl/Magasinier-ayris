@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('C:\\Users\\hicha\\OneDrive\\Bureau\\magasinier-ayris-main\\magasinier-ayris-main\\database', 'database'), ('C:\\Users\\hicha\\OneDrive\\Bureau\\magasinier-ayris-main\\magasinier-ayris-main\\ui', 'ui'), ('C:\\Users\\hicha\\OneDrive\\Bureau\\magasinier-ayris-main\\magasinier-ayris-main\\services', 'services'), ('C:\\Users\\hicha\\OneDrive\\Bureau\\magasinier-ayris-main\\magasinier-ayris-main\\assets', 'assets')]
 binaries = []
-hiddenimports = ['customtkinter', 'tkinter', 'tkinter.ttk', 'reportlab', 'reportlab.graphics', 'reportlab.platypus', 'reportlab.lib', 'openpyxl', 'PIL', 'sqlite3', 'tkcalendar', 'babel.numbers']
+hiddenimports = ['customtkinter', 'tkinter', 'tkinter.ttk', 'reportlab', 'reportlab.graphics', 'reportlab.platypus', 'reportlab.lib', 'openpyxl', 'PIL', 'PIL.Image', 'PIL.ImageTk', 'PIL.ImageOps', 'sqlite3', 'tkcalendar', 'babel.numbers']
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('reportlab')
@@ -13,6 +13,8 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('tkcalendar')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('babel')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('PIL')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
